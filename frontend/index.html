@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mushroom Foraging</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-image: url('https://everwallpaper.com/cdn/shop/files/1haze-blanketing-forest-wall-mural.jpg?v=1732535080');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+
+        header {
+            background-color: #4CAF50;
+            padding: 20px;
+            text-align: center;
+            color: white;
+        }
+
+        h1 {
+            margin: 0;
+        }
+
+        .container {
+            width: 80%;
+            margin: auto;
+            padding: 20px;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .controls label {
+            margin-right: 10px;
+            font-weight: bold;
+        }
+
+        .controls select,
+        .controls button {
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        .weather-info {
+            text-align: center;
+            margin-top: 20px;
+            padding: 20px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .mushroom-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 30px;
+        }
+
+        .mushroom {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 200px;
+            padding: 10px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .mushroom img {
+            width: 150px;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 5px;
+        }
+
+        .mushroom:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .mushroom h3 {
+            font-size: 18px;
+            color: #333;
+            margin: 10px 0;
+        }
+
+        .good-day {
+            color: #4CAF50;
+            font-size: 18px;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+
+        .not-good-day {
+            color: #f44336;
+            font-size: 18px;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Mushroom Foraging Conditions</h1>
+</header>
+
+<div class="container">
+    <div class="controls">
+        <label for="suburb">Select Suburb:</label>
+        <select id="suburb">
+            <option value="newlands">Newlands</option>
+            <option value="stellenbosch">Stellenbosch</option>
+            <option value="houtbay">Hout Bay</option>
+            <option value="tokai">Tokai</option>
+            <option value="constantia">Contantia</option>
+        </select>
+        <button onclick="checkWeather()">Check Foraging Conditions</button>
+    </div>
+
+    <div id="result">
+        <div class="weather-info" id="weather-info"></div>
+
+        <div id="mushroom-info">
+            <h2>Mushrooms Suitable for Foraging</h2>
+            <div class="mushroom-list" id="mushroom-list"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function checkWeather() {
+        const suburb = document.getElementById("suburb").value;
+        const response = await fetch(`http://127.0.0.1:8000/check?suburb=${suburb}`);
+        const data = await response.json();
+
+        // Display weather data
+        const weatherInfo = document.getElementById("weather-info");
+        weatherInfo.innerHTML = `
+            <p><strong>🌡Temperature:</strong> ${data.avg_temperature}°C</p>
+            <p><strong>💧Humidity:</strong> ${data.avg_humidity}%</p>
+            <p><strong>🌧Rain Probability:</strong> ${data.avg_precipitation_probability}%</p>
+            <p><strong>💨Wind Speed:</strong> ${data.avg_wind_speed} km/h</p>
+            <p><strong>Foraging Condition:</strong> ${data.good_day ? 'The conditions seem good for Foraging🍄✅' : 'Not a Good Day for Foraging🍄❌'}</p>
+        `;
+
+        // Display mushroom recommendations
+        const mushroomList = document.getElementById("mushroom-list");
+        mushroomList.innerHTML = ''; // Clear any existing content
+
+        if (data.recommended_mushrooms.length === 0) {
+            mushroomList.innerHTML = '<p>No mushrooms are recommended for foraging today.</p>';
+        } else {
+            data.recommended_mushrooms.forEach(mushroom => {
+                const mushroomDiv = document.createElement("div");
+                mushroomDiv.classList.add("mushroom");
+
+                // Set mushroom image from Wikipedia
+                let imageUrl = '';
+                switch (mushroom.toLowerCase()) {
+                    case 'porcini':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Boletus_edulis_JPG9.jpg/1920px-Boletus_edulis_JPG9.jpg';
+                        break;
+                    case 'poplar_boletes':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/9/9e/Leccinum_duriusculum_254194.jpg/500px-Leccinum_duriusculum_254194.jpg';
+                        break;
+                    case 'pine_rings':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/8/89/Lactarius_deliciosus.jpg';
+                        break;
+                    case 'agaricus':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/2012-07-09_Agaricus_subfloccosus_235732_crop.jpg/1920px-2012-07-09_Agaricus_subfloccosus_235732_crop.jpg';
+                        break;
+                    case 'white_parasols':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Chlorophyllum_molybdites.jpg';
+                        break;
+                    case 'wood_blewits':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/6/68/Clitocybe_nuda_2008_G1.jpg';
+                        break;
+                    case 'morels':
+                        imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/5/5a/Morchella_conica.jpg';
+                        break;
+                    default:
+                        imageUrl = ''; // In case no match, set to empty.
+                        break;
+                }
+
+                const img = document.createElement("img");
+                img.src = imageUrl;
+                img.alt = mushroom;
+
+                const name = document.createElement("h3");
+                name.textContent = mushroom.charAt(0).toUpperCase() + mushroom.slice(1); // Capitalize the first letter
+
+                mushroomDiv.appendChild(img);
+                mushroomDiv.appendChild(name);
+                mushroomList.appendChild(mushroomDiv);
+            });
+        }
+    }
+</script>
+
+</body>
+</html>
