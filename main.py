@@ -1,20 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import requests
 from typing import Optional
+import requests
 
 app = FastAPI()
 
-# Enable CORS for local frontend
+# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development only; restrict in production
+    allow_origins=["*"],  # In production, restrict this
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Suburbs and their respective latitudes and longitudes
+# Suburb coordinates
 SUBURBS = {
     "newlands": {"lat": -33.9644, "lon": 18.4567},
     "stellenbosch": {"lat": -33.9333, "lon": 18.8496},
@@ -23,66 +23,30 @@ SUBURBS = {
     "constantia": {"lat": -34.0256, "lon": 18.4252}
 }
 
-# Mushroom foraging profiles
+# Mushroom profiles
 MUSHROOM_PROFILES = {
-    "porcini": {
-        "temp_range": (12, 28),
-        "humidity_min": 70,
-        "rain_min": 5,
-        "rain_max": 40,
-        "wind_max": 10
-    },
-    "pine_rings": {
-        "temp_range": (10, 22),
-        "humidity_min": 65,
-        "rain_min": 5,
-        "rain_max": 20,
-        "wind_max": 10
-    },
-    "poplar_boletes": {
-        "temp_range": (12, 23),
-        "humidity_min": 60,
-        "rain_min": 3,
-        "rain_max": 35,
-        "wind_max": 10
-    },
-    "agaricus": {
-        "temp_range": (14, 26),
-        "humidity_min": 65,
-        "rain_min": 0,
-        "rain_max": 25,
-        "wind_max": 8
-    },
-    "white_parasols": {
-        "temp_range": (18, 28),
-        "humidity_min": 60,
-        "rain_min": 0,
-        "rain_max": 30,
-        "wind_max": 6
-    },
-    "wood_blewits": {
-        "temp_range": (4, 8),
-        "humidity_min": 80,
-        "rain_min": 5020,
-        "rain_max": 50,
-        "wind_max": 5
-    },
-    "morels": {
-        "temp_range": (12, 21),
-        "humidity_min": 70,
-        "rain_min": 10,
-        "rain_max": 50,
-        "wind_max": 4
-    }
+    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 5, "rain_max": 40, "wind_max": 10},
+    "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 5, "rain_max": 20, "wind_max": 10},
+    "poplar_boletes": {"temp_range": (12, 23), "humidity_min": 60, "rain_min": 3, "rain_max": 35, "wind_max": 10},
+    "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 0, "rain_max": 25, "wind_max": 8},
+    "white_parasols": {"temp_range": (18, 28), "humidity_min": 60, "rain_min": 0, "rain_max": 30, "wind_max": 6},
+    "wood_blewits": {"temp_range": (4, 8), "humidity_min": 80, "rain_min": 20, "rain_max": 50, "wind_max": 5},
+    "morels": {"temp_range": (12, 21), "humidity_min": 70, "rain_min": 10, "rain_max": 50, "wind_max": 4}
 }
 
 @app.get("/check")
-def check_weather(suburb: str = "newlands"):
-    if suburb not in SUBURBS:
-        raise HTTPException(status_code=400, detail="Invalid suburb provided.")
-
-    lat = SUBURBS[suburb]["lat"]
-    lon = SUBURBS[suburb]["lon"]
+def check_weather(
+    suburb: Optional[str] = None,
+    lat: Optional[float] = Query(None),
+    lon: Optional[float] = Query(None)
+):
+    if suburb:
+        if suburb not in SUBURBS:
+            raise HTTPException(status_code=400, detail="Invalid suburb provided.")
+        lat = SUBURBS[suburb]["lat"]
+        lon = SUBURBS[suburb]["lon"]
+    elif lat is None or lon is None:
+        raise HTTPException(status_code=400, detail="Provide either a suburb or both lat and lon.")
 
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
@@ -92,25 +56,18 @@ def check_weather(suburb: str = "newlands"):
     )
 
     try:
-        print(f"Making API request to: {url}")
         response = requests.get(url)
-
         if response.status_code != 200:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch weather data from Open-Meteo. Status Code: {response.status_code}"
-            )
+            raise HTTPException(status_code=500, detail="Weather API failed.")
 
         data = response.json()
-        print("Received data:", data)
-
         hourly = data.get("hourly", {})
         temp = hourly.get("temperature_2m", [])
         humidity = hourly.get("relative_humidity_2m", [])
         rain = hourly.get("precipitation_probability", [])
         wind = hourly.get("wind_speed_10m", [])
 
-        if not temp or not humidity or not rain or not wind:
+        if not all([temp, humidity, rain, wind]):
             raise HTTPException(status_code=500, detail="Incomplete weather data received.")
 
         avg_temp = sum(temp) / len(temp)
@@ -118,7 +75,6 @@ def check_weather(suburb: str = "newlands"):
         avg_rain = sum(rain) / len(rain)
         avg_wind = sum(wind) / len(wind)
 
-        # Evaluating if it's a good day for foraging
         good_day = (
             10 <= avg_temp <= 25 and
             avg_rain < 40 and
@@ -126,9 +82,7 @@ def check_weather(suburb: str = "newlands"):
             avg_wind <= 10
         )
 
-        # Check mushroom profiles based on weather
         mushroom_recommendations = []
-
         for name, profile in MUSHROOM_PROFILES.items():
             t_min, t_max = profile["temp_range"]
             if (
@@ -140,7 +94,7 @@ def check_weather(suburb: str = "newlands"):
                 mushroom_recommendations.append(name)
 
         return {
-            "suburb": suburb,
+            "location": suburb if suburb else {"lat": lat, "lon": lon},
             "good_day": good_day,
             "avg_temperature": round(avg_temp, 1),
             "avg_precipitation_probability": round(avg_rain, 1),
@@ -149,9 +103,7 @@ def check_weather(suburb: str = "newlands"):
             "recommended_mushrooms": mushroom_recommendations
         }
 
-    except requests.exceptions.RequestException as e:
-        print(f"Request error: {e}")
-        raise HTTPException(status_code=500, detail="Error during the weather request.")
+    except requests.exceptions.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to fetch weather data.")
     except Exception as e:
-        print(f"Unexpected error: {e}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+        raise HTTPException(status_code=500, detail=str(e))
