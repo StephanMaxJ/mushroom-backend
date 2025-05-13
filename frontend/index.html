@@ -66,7 +66,7 @@
   <script>
     async function checkWeather() {
       const suburb = document.getElementById("suburb").value;
-      const response = await fetch(`http://127.0.0.1:8000/check?suburb=${suburb}`);
+      const response = await fetch(`https://mushroom-backend-frwl.onrender.com/check?suburb=${suburb}`);
       const data = await response.json();
 
       const weatherInfo = document.getElementById("weather-info");
