@@ -18,12 +18,22 @@ app.add_middleware(
 SUBURBS = {
     "newlands": {"lat": -33.9644, "lon": 18.4567},
     "stellenbosch": {"lat": -33.9333, "lon": 18.8496},
+    "stormsrivier": {"lat": -33.9674, "lon": 23.8898},
+    "tsitsikamma": {"lat": -34.0133, "lon": 23.8892},
+    "kzn_midlands": {"lat": -29.5667, "lon": 30.2167},
     "houtbay": {"lat": -34.0309, "lon": 18.3700},
     "tokai": {"lat": -34.0491, "lon": 18.4242},
-    "constantia": {"lat": -34.0256, "lon": 18.4252}
+    "constantia": {"lat": -34.0256, "lon": 18.4252},
+    "franschhoek": {"lat": -33.9333, "lon": 18.8496},
+    "noordhoek": {"lat": -34.1139, "lon": 18.3778},
+    "swellendam": {"lat": -34.0207, "lon": 20.4418},
+    "riversdale": {"lat": -34.0892, "lon": 21.2642},
+    "knysna": {"lat": -34.0359, "lon": 23.0471},
+    "tulbagh": {"lat": -33.2855, "lon": 19.1454},
+    "ceres": {"lat": -33.3689, "lon": 19.3100}
 }
 
-# Mushroom profiles
+# Mushroom profiles (no changes needed here)
 MUSHROOM_PROFILES = {
     "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 5, "rain_max": 40, "wind_max": 10},
     "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 5, "rain_max": 20, "wind_max": 10},
@@ -31,21 +41,30 @@ MUSHROOM_PROFILES = {
     "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 0, "rain_max": 25, "wind_max": 8},
     "white_parasols": {"temp_range": (18, 28), "humidity_min": 60, "rain_min": 0, "rain_max": 30, "wind_max": 6},
     "wood_blewits": {"temp_range": (4, 8), "humidity_min": 80, "rain_min": 20, "rain_max": 50, "wind_max": 5},
-    "morels": {"temp_range": (12, 21), "humidity_min": 70, "rain_min": 10, "rain_max": 50, "wind_max": 4}
-}
+    "morels": {"temp_range": (12, 21), "humidity_min": 70, "rain_min": 10, "rain_max": 50, "wind_max": 4},
+    "blushers": {"temp_range": (14, 26), "humidity_min": 70, "rain_min": 5, "rain_max": 35, "wind_max": 8},
+    "slippery_jills": {"temp_range": (12, 24), "humidity_min": 65, "rain_min": 5, "rain_max": 30, "wind_max": 9},
+    "weeping_bolete": {"temp_range": (11, 23), "humidity_min": 60, "rain_min": 3, "rain_max": 25, "wind_max": 10},
+    "bovine_bolete": {"temp_range": (10, 22), "humidity_min": 60, "rain_min": 4, "rain_max": 28, "wind_max": 9},
+    "chicken_of_the_woods": {"temp_range": (15, 30), "humidity_min": 70, "rain_min": 10, "rain_max": 40, "wind_max": 6},
+    "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
+    }
 
 @app.get("/check")
 def check_weather(
-    suburb: Optional[str] = None,
+    suburb: Optional[str] = "newlands",  # Default to 'newlands' if no suburb provided
     lat: Optional[float] = Query(None),
     lon: Optional[float] = Query(None)
 ):
+    # If suburb is passed, override default
     if suburb:
         if suburb not in SUBURBS:
             raise HTTPException(status_code=400, detail="Invalid suburb provided.")
         lat = SUBURBS[suburb]["lat"]
         lon = SUBURBS[suburb]["lon"]
-    elif lat is None or lon is None:
+    
+    # Ensure lat and lon are provided if no suburb
+    if lat is None or lon is None:
         raise HTTPException(status_code=400, detail="Provide either a suburb or both lat and lon.")
 
     url = (
