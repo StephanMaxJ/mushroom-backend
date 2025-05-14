@@ -124,11 +124,11 @@ def check_weather(
 
         # New 4-tier classification
         if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
-            foraging_quality = "🌟 Perfect day, there should be lots out"
-        elif avg_temp >= 16 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
+            foraging_quality = "🍄‍🟫 Perfect day, there should be lots out"
+        elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
             foraging_quality = "✅ Good day, go check your spots you may get lucky"
         elif avg_temp >= 12 and avg_rain <= 10 and avg_humidity >= 60 and avg_wind <= 15:
-            foraging_quality = "⚠️ Average day, some mushrooms around but not much"
+            foraging_quality = "❔Average day, some mushrooms around but not much"
         else:
             foraging_quality = "❌ Not a good day, you could still check microclimates you know of"
 
