@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
 import requests
 from datetime import datetime, timedelta
 
@@ -15,28 +14,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Suburb coordinates
-SUBURBS = {
-    "newlands": {"lat": -33.9644, "lon": 18.4567},
-    "stellenbosch": {"lat": -33.9333, "lon": 18.8496},
-    "stormsrivier": {"lat": -33.9674, "lon": 23.8898},
-    "tsitsikamma": {"lat": -34.0133, "lon": 23.8892},
-    "kzn_midlands": {"lat": -29.5667, "lon": 30.2167},
-    "houtbay": {"lat": -34.0309, "lon": 18.3700},
-    "tokai": {"lat": -34.0491, "lon": 18.4242},
-    "constantia": {"lat": -34.0256, "lon": 18.4252},
-    "franschhoek": {"lat": -33.9333, "lon": 18.8496},
-    "noordhoek": {"lat": -34.1139, "lon": 18.3778},
-    "swellendam": {"lat": -34.0207, "lon": 20.4418},
-    "riversdale": {"lat": -34.0892, "lon": 21.2642},
-    "knysna": {"lat": -34.0359, "lon": 23.0471},
-    "tulbagh": {"lat": -33.2855, "lon": 19.1454},
-    "ceres": {"lat": -33.3689, "lon": 19.3100}
-}
-
 # Mushroom profiles
 MUSHROOM_PROFILES = {
-    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 2, "rain_max": 80, "wind_max": 15},
+    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 0.2, "rain_max": 80, "wind_max": 15},
     "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
     "poplar_boletes": {"temp_range": (10, 23), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 15},
     "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 3, "rain_max": 50, "wind_max": 11},
@@ -55,7 +35,6 @@ MUSHROOM_PROFILES = {
 def get_season():
     today = datetime.utcnow()
     month = today.month
-
     if 12 <= month <= 2:
         return "Summer 🌞"
     elif 3 <= month <= 5:
@@ -65,29 +44,13 @@ def get_season():
     else:
         return "Spring 🌸"
 
-# Helper function to calculate average of a list of values
+# Helper function to calculate average
 def average(values):
     clean = [v for v in values if v is not None]
     return sum(clean) / len(clean) if clean else 0
 
 @app.get("/check")
-def check_weather(
-    suburb: Optional[str] = "newlands",
-    lat: Optional[float] = Query(None),
-    lon: Optional[float] = Query(None)
-):
-    if suburb:
-        if suburb not in SUBURBS:
-            raise HTTPException(status_code=400, detail="Invalid suburb provided.")
-        lat = SUBURBS[suburb]["lat"]
-        lon = SUBURBS[suburb]["lon"]
-
-    if lat is None or lon is None:
-        raise HTTPException(status_code=400, detail="Provide either a suburb or both lat and lon.")
-
-    # Get current season
-    season = get_season()
-
+def check_conditions(lat: float = Query(...), lon: float = Query(...)):
     today = datetime.utcnow().date()
     seven_days_ago = today - timedelta(days=7)
 
@@ -111,7 +74,7 @@ def check_weather(
         hourly = data.get("hourly", {})
         temp = hourly.get("temperature_2m", [])
         humidity = hourly.get("relative_humidity_2m", [])
-        rain = hourly.get("precipitation", [])  # Now using total precipitation (mm)
+        rain = hourly.get("precipitation", [])
         wind = hourly.get("wind_speed_10m", [])
 
         if not all([temp, humidity, rain, wind]):
@@ -119,19 +82,20 @@ def check_weather(
 
         avg_temp = average(temp)
         avg_humidity = average(humidity)
-        avg_rain = average(rain)  # Average of total precipitation (mm)
+        avg_rain = average(rain)
         avg_wind = average(wind)
 
-        # New 4-tier classification
+        # Foraging day quality rating
         if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
             foraging_quality = "🍄‍🟫 Perfect day, there should be lots out"
         elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
             foraging_quality = "✅ Good day, go check your spots you may get lucky"
         elif avg_temp >= 12 and avg_rain <= 10 and avg_humidity >= 60 and avg_wind <= 15:
-            foraging_quality = "❔Average day, some mushrooms around but not much"
+            foraging_quality = "❔ Average day, some mushrooms around but not much"
         else:
             foraging_quality = "❌ Not a good day, you could still check microclimates you know of"
 
+        # Matching mushroom species
         mushroom_recommendations = []
         for name, profile in MUSHROOM_PROFILES.items():
             t_min, t_max = profile["temp_range"]
@@ -144,11 +108,11 @@ def check_weather(
                 mushroom_recommendations.append(name)
 
         return {
-            "location": suburb if suburb else {"lat": lat, "lon": lon},
-            "season": season,  # Added season information
+            "location": {"lat": lat, "lon": lon},
+            "season": get_season(),
             "foraging_quality": foraging_quality,
             "avg_temperature": round(avg_temp, 1),
-            "avg_precipitation": round(avg_rain, 1),  # Total precipitation in mm
+            "avg_precipitation": round(avg_rain, 1),
             "avg_humidity": round(avg_humidity, 1),
             "avg_wind_speed": round(avg_wind, 1),
             "recommended_mushrooms": mushroom_recommendations
