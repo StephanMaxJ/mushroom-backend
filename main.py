@@ -16,7 +16,7 @@ app.add_middleware(
 
 # Mushroom profiles
 MUSHROOM_PROFILES = {
-    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 0.2, "rain_max": 80, "wind_max": 15},
+    "porcini": {"temp_range": (12, 28), "humidity_min": 75, "rain_min": 0.1, "rain_max": 80, "wind_max": 15},
     "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
     "poplar_boletes": {"temp_range": (10, 23), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 15},
     "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 3, "rain_max": 50, "wind_max": 11},
