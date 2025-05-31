@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# Enable CORS for frontend
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -16,7 +16,7 @@ app.add_middleware(
 
 # Mushroom profiles
 MUSHROOM_PROFILES = {
-    "porcini": {"temp_range": (12, 28), "humidity_min": 75, "rain_min": 0.1, "rain_max": 80, "wind_max": 15},
+    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 0.1, "rain_max": 80, "wind_max": 15},
     "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
     "poplar_boletes": {"temp_range": (10, 23), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 15},
     "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 3, "rain_max": 50, "wind_max": 11},
@@ -31,10 +31,8 @@ MUSHROOM_PROFILES = {
     "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
 }
 
-# Helper function to determine the current season
 def get_season():
-    today = datetime.utcnow()
-    month = today.month
+    month = datetime.utcnow().month
     if 12 <= month <= 2:
         return "Summer 🌞"
     elif 3 <= month <= 5:
@@ -44,81 +42,82 @@ def get_season():
     else:
         return "Spring 🌸"
 
-# Helper function to calculate average
 def average(values):
     clean = [v for v in values if v is not None]
     return sum(clean) / len(clean) if clean else 0
 
 @app.get("/check")
 def check_conditions(lat: float = Query(...), lon: float = Query(...)):
+    weatherapi_key = "b5c1991aa27149c881e173752250505"  # <== Replace with your real key
     today = datetime.utcnow().date()
-    seven_days_ago = today - timedelta(days=7)
+    start_date = today - timedelta(days=6)
 
-    start_date = seven_days_ago.strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
-
-    url = (
-        f"https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={lat}&longitude={lon}"
-        f"&start_date={start_date}&end_date={end_date}"
-        f"&hourly=temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m"
-        f"&timezone=auto"
+    # --- Open-Meteo historical data ---
+    open_meteo_url = (
+        f"https://archive-api.open-meteo.com/v1/archive"
+        f"?latitude={lat}&longitude={lon}&start_date={start_date}&end_date={today}"
+        f"&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
     )
+    meteo_response = requests.get(open_meteo_url)
+    if meteo_response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Open-Meteo data error")
+    meteo_data = meteo_response.json().get("hourly", {})
 
-    try:
+    avg_temp = average(meteo_data.get("temperature_2m", []))
+    avg_humidity = average(meteo_data.get("relative_humidity_2m", []))
+    avg_wind = average(meteo_data.get("wind_speed_10m", []))
+
+    # --- WeatherAPI rainfall (daily loop) ---
+    rain_values = []
+    for i in range(7):
+        date = today - timedelta(days=i)
+        url = f"http://api.weatherapi.com/v1/history.json?key={weatherapi_key}&q={lat},{lon}&dt={date}"
         response = requests.get(url)
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail="Weather API failed.")
+            raise HTTPException(status_code=500, detail=f"WeatherAPI error for {date}")
+        day_data = response.json().get("forecast", {}).get("forecastday", [{}])[0].get("day", {})
+        rain_values.append(day_data.get("totalprecip_mm", 0))
 
-        data = response.json()
-        hourly = data.get("hourly", {})
-        temp = hourly.get("temperature_2m", [])
-        humidity = hourly.get("relative_humidity_2m", [])
-        rain = hourly.get("precipitation", [])
-        wind = hourly.get("wind_speed_10m", [])
+    avg_rain = average(rain_values)
 
-        if not all([temp, humidity, rain, wind]):
-            raise HTTPException(status_code=500, detail="Incomplete weather data received.")
+    # --- Foraging conditions ---
+    if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
+        quality = "🍄‍🟫 Perfect day, there should be lots out"
+    elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
+        quality = "✅ Good day, go check your spots you may get lucky"
+    elif avg_temp >= 12 and avg_rain <= 10 and avg_humidity >= 60 and avg_wind <= 15:
+        quality = "❔ Average day, some mushrooms around but not much"
+    else:
+        quality = "❌ Not a good day, you could still check microclimates you know of"
 
-        avg_temp = average(temp)
-        avg_humidity = average(humidity)
-        avg_rain = average(rain)
-        avg_wind = average(wind)
+    # --- Mushroom recommendations ---
+    recommended = []
+    for name, profile in MUSHROOM_PROFILES.items():
+        t_min, t_max = profile["temp_range"]
+        if (
+            t_min <= avg_temp <= t_max and
+            profile["humidity_min"] <= avg_humidity and
+            profile["rain_min"] <= avg_rain <= profile["rain_max"] and
+            avg_wind <= profile["wind_max"]
+        ):
+            recommended.append(name)
 
-        # Foraging day quality rating
-        if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
-            foraging_quality = "🍄‍🟫 Perfect day, there should be lots out"
-        elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
-            foraging_quality = "✅ Good day, go check your spots you may get lucky"
-        elif avg_temp >= 12 and avg_rain <= 10 and avg_humidity >= 60 and avg_wind <= 15:
-            foraging_quality = "❔ Average day, some mushrooms around but not much"
-        else:
-            foraging_quality = "❌ Not a good day, you could still check microclimates you know of"
+    # --- Forecast box (WeatherAPI current) ---
+    forecast_url = f"http://api.weatherapi.com/v1/current.json?key={weatherapi_key}&q={lat},{lon}"
+    forecast_response = requests.get(forecast_url)
+    current = forecast_response.json().get("current", {})
 
-        # Matching mushroom species
-        mushroom_recommendations = []
-        for name, profile in MUSHROOM_PROFILES.items():
-            t_min, t_max = profile["temp_range"]
-            if (
-                t_min <= avg_temp <= t_max and
-                profile["humidity_min"] <= avg_humidity and
-                profile["rain_min"] <= avg_rain <= profile["rain_max"] and
-                avg_wind <= profile["wind_max"]
-            ):
-                mushroom_recommendations.append(name)
-
-        return {
-            "location": {"lat": lat, "lon": lon},
-            "season": get_season(),
-            "foraging_quality": foraging_quality,
-            "avg_temperature": round(avg_temp, 1),
-            "avg_precipitation": round(avg_rain, 1),
-            "avg_humidity": round(avg_humidity, 1),
-            "avg_wind_speed": round(avg_wind, 1),
-            "recommended_mushrooms": mushroom_recommendations
-        }
-
-    except requests.exceptions.RequestException:
-        raise HTTPException(status_code=500, detail="Failed to fetch weather data.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "location": {"lat": lat, "lon": lon},
+        "season": get_season(),
+        "foraging_quality": quality,
+        "avg_temperature": round(avg_temp, 1),
+        "avg_precipitation": round(avg_rain, 1),
+        "avg_humidity": round(avg_humidity, 1),
+        "avg_wind_speed": round(avg_wind, 1),
+        "forecast_temperature": current.get("temp_c"),
+        "forecast_humidity": current.get("humidity"),
+        "forecast_precipitation": current.get("precip_mm", 0),
+        "forecast_wind_speed": current.get("wind_kph"),
+        "recommended_mushrooms": recommended
+    }
