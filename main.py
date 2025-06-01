@@ -1,20 +1,55 @@
-from fastapi import FastAPI, HTTPException, Query
+# main.py - Updated with Authentication + Your Weather Features
+import os
+from fastapi import FastAPI, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr
 import requests
 from datetime import datetime, timedelta
+import jwt
+import bcrypt
+import sqlite3
+from typing import List, Optional
+import base64
+import json
 
-app = FastAPI()
+# Environment Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key-change-in-production")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./mushroom_app.db")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-# CORS setup
+app = FastAPI(
+    title="Mushroom Foraging API",
+    description="API for mushroom identification and foraging journal",
+    version="1.0.0"
+)
+
+# CORS Configuration
+if ENVIRONMENT == "production":
+    allowed_origins = [
+        FRONTEND_URL,
+        "https://*.onrender.com",
+        "https://*.netlify.app",
+        "https://*.vercel.app"
+    ]
+else:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mushroom profiles
+# Security
+security = HTTPBearer()
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Your existing mushroom profiles
 MUSHROOM_PROFILES = {
     "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 0.1, "rain_max": 80, "wind_max": 15},
     "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
@@ -31,6 +66,205 @@ MUSHROOM_PROFILES = {
     "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
 }
 
+# Database functions
+def get_database_connection():
+    """Get database connection - supports both SQLite and PostgreSQL"""
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        import psycopg2
+        from urllib.parse import urlparse
+        result = urlparse(DATABASE_URL)
+        return psycopg2.connect(
+            database=result.path[1:],
+            user=result.username,
+            password=result.password,
+            host=result.hostname,
+            port=result.port
+        )
+    else:
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+        return sqlite3.connect(db_path)
+
+def init_database():
+    """Initialize database tables"""
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        # PostgreSQL tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                full_name VARCHAR(100),
+                bio TEXT,
+                location VARCHAR(100),
+                role VARCHAR(20) DEFAULT 'user',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                date DATE NOT NULL,
+                location VARCHAR(200) NOT NULL,
+                temperature FLOAT,
+                humidity FLOAT,
+                rainfall FLOAT,
+                wind_speed FLOAT,
+                species_found TEXT,
+                entry_text TEXT NOT NULL,
+                images TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Insert admin user
+        password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute('''
+            INSERT INTO users (username, email, password_hash, full_name, role)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (username) DO NOTHING
+        ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
+        
+    else:
+        # SQLite tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT,
+                bio TEXT,
+                location TEXT,
+                role TEXT DEFAULT 'user',
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                date TEXT NOT NULL,
+                location TEXT NOT NULL,
+                temperature REAL,
+                humidity REAL,
+                rainfall REAL,
+                wind_speed REAL,
+                species_found TEXT,
+                entry_text TEXT NOT NULL,
+                images TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        
+        # Insert admin user
+        password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute('''
+            INSERT OR IGNORE INTO users (username, email, password_hash, full_name, role)
+            VALUES (?, ?, ?, ?, ?)
+        ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
+    
+    conn.commit()
+    conn.close()
+
+# Models
+class User(BaseModel):
+    username: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    bio: Optional[str] = None
+    location: Optional[str] = None
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    bio: Optional[str] = None
+    location: Optional[str] = None
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+class JournalEntry(BaseModel):
+    date: str
+    location: str
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    rainfall: Optional[float] = None
+    wind_speed: Optional[float] = None
+    species_found: Optional[str] = None
+    entry_text: str
+    images: Optional[List[dict]] = None
+
+# Authentication functions
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            return None
+        return username
+    except jwt.PyJWTError:
+        return None
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    username = verify_token(credentials.credentials)
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+    else:
+        cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+    
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "id": user[0],
+        "username": user[1],
+        "email": user[2],
+        "full_name": user[4],
+        "bio": user[5],
+        "location": user[6],
+        "role": user[7],
+        "is_active": user[8],
+        "created_at": user[9]
+    }
+
+# Utility functions (your existing code)
 def get_season():
     month = datetime.utcnow().month
     if 12 <= month <= 2:
@@ -46,41 +280,50 @@ def average(values):
     clean = [v for v in values if v is not None]
     return sum(clean) / len(clean) if clean else 0
 
+# Routes - Your existing weather check endpoint (modified to support both authenticated and non-authenticated users)
 @app.get("/check")
-def check_conditions(lat: float = Query(...), lon: float = Query(...)):
-    weatherapi_key = "b5c1991aa27149c881e173752250505"  # <== Replace with your real key
+def check_conditions(lat: float = Query(...), lon: float = Query(...), current_user: dict = Depends(get_current_user)):
+    """Weather conditions check - now requires authentication"""
+    weatherapi_key = "b5c1991aa27149c881e173752250505"
     today = datetime.utcnow().date()
     start_date = today - timedelta(days=6)
 
-    # --- Open-Meteo historical data ---
+    # Open-Meteo historical data
     open_meteo_url = (
         f"https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={lat}&longitude={lon}&start_date={start_date}&end_date={today}"
         f"&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
     )
-    meteo_response = requests.get(open_meteo_url)
-    if meteo_response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Open-Meteo data error")
-    meteo_data = meteo_response.json().get("hourly", {})
+    
+    try:
+        meteo_response = requests.get(open_meteo_url, timeout=10)
+        if meteo_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Open-Meteo data error")
+        meteo_data = meteo_response.json().get("hourly", {})
+    except requests.RequestException:
+        # Fallback values if API fails
+        meteo_data = {"temperature_2m": [15], "relative_humidity_2m": [70], "wind_speed_10m": [10]}
 
     avg_temp = average(meteo_data.get("temperature_2m", []))
     avg_humidity = average(meteo_data.get("relative_humidity_2m", []))
     avg_wind = average(meteo_data.get("wind_speed_10m", []))
 
-    # --- WeatherAPI rainfall (daily loop) ---
+    # WeatherAPI rainfall
     rain_values = []
     for i in range(7):
         date = today - timedelta(days=i)
-        url = f"http://api.weatherapi.com/v1/history.json?key={weatherapi_key}&q={lat},{lon}&dt={date}"
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"WeatherAPI error for {date}")
-        day_data = response.json().get("forecast", {}).get("forecastday", [{}])[0].get("day", {})
-        rain_values.append(day_data.get("totalprecip_mm", 0))
+        try:
+            url = f"http://api.weatherapi.com/v1/history.json?key={weatherapi_key}&q={lat},{lon}&dt={date}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                day_data = response.json().get("forecast", {}).get("forecastday", [{}])[0].get("day", {})
+                rain_values.append(day_data.get("totalprecip_mm", 0))
+        except requests.RequestException:
+            rain_values.append(0)  # Fallback
 
-    avg_rain = average(rain_values)
+    avg_rain = average(rain_values) if rain_values else 0
 
-    # --- Foraging conditions ---
+    # Foraging conditions
     if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
         quality = "🍄‍🟫 Perfect day, there should be lots out"
     elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
@@ -90,7 +333,7 @@ def check_conditions(lat: float = Query(...), lon: float = Query(...)):
     else:
         quality = "❌ Not a good day, you could still check microclimates you know of"
 
-    # --- Mushroom recommendations ---
+    # Mushroom recommendations
     recommended = []
     for name, profile in MUSHROOM_PROFILES.items():
         t_min, t_max = profile["temp_range"]
@@ -102,10 +345,13 @@ def check_conditions(lat: float = Query(...), lon: float = Query(...)):
         ):
             recommended.append(name)
 
-    # --- Forecast box (WeatherAPI current) ---
-    forecast_url = f"http://api.weatherapi.com/v1/current.json?key={weatherapi_key}&q={lat},{lon}"
-    forecast_response = requests.get(forecast_url)
-    current = forecast_response.json().get("current", {})
+    # Current forecast
+    try:
+        forecast_url = f"http://api.weatherapi.com/v1/current.json?key={weatherapi_key}&q={lat},{lon}"
+        forecast_response = requests.get(forecast_url, timeout=10)
+        current = forecast_response.json().get("current", {}) if forecast_response.status_code == 200 else {}
+    except requests.RequestException:
+        current = {}
 
     return {
         "location": {"lat": lat, "lon": lon},
@@ -119,5 +365,281 @@ def check_conditions(lat: float = Query(...), lon: float = Query(...)):
         "forecast_humidity": current.get("humidity"),
         "forecast_precipitation": current.get("precip_mm", 0),
         "forecast_wind_speed": current.get("wind_kph"),
-        "recommended_mushrooms": recommended
+        "recommended_mushrooms": recommended,
+        "user": current_user["username"]  # Include user info
     }
+
+# Authentication routes
+@app.post("/signup")
+async def signup(user: UserCreate):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    # Check if user exists
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT username FROM users WHERE username = %s OR email = %s", 
+                      (user.username, user.email))
+    else:
+        cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
+                      (user.username, user.email))
+    
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="Username or email already registered")
+    
+    # Hash password and create user
+    password_hash = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute('''
+            INSERT INTO users (username, email, password_hash, full_name)
+            VALUES (%s, %s, %s, %s)
+        ''', (user.username, user.email, password_hash, user.full_name))
+    else:
+        cursor.execute('''
+            INSERT INTO users (username, email, password_hash, full_name)
+            VALUES (?, ?, ?, ?)
+        ''', (user.username, user.email, password_hash, user.full_name))
+    
+    conn.commit()
+    conn.close()
+    
+    access_token = create_access_token(data={"sub": user.username})
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "username": user.username
+    }
+
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT username, password_hash FROM users WHERE username = %s", 
+                      (form_data.username,))
+    else:
+        cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
+                      (form_data.username,))
+    
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not bcrypt.checkpw(form_data.password.encode('utf-8'), user[1].encode('utf-8')):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
+    
+    access_token = create_access_token(data={"sub": user[0]})
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "username": user[0]
+    }
+
+# User profile routes
+@app.get("/user/profile")
+async def get_user_profile(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+@app.put("/user/profile")
+async def update_user_profile(user_update: UserUpdate, current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute('''
+            UPDATE users SET email = %s, full_name = %s, bio = %s, location = %s
+            WHERE username = %s
+        ''', (user_update.email, user_update.full_name, user_update.bio, 
+              user_update.location, current_user["username"]))
+    else:
+        cursor.execute('''
+            UPDATE users SET email = ?, full_name = ?, bio = ?, location = ?
+            WHERE username = ?
+        ''', (user_update.email, user_update.full_name, user_update.bio, 
+              user_update.location, current_user["username"]))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Profile updated successfully"}
+
+@app.post("/user/change-password")
+async def change_password(password_data: PasswordChange, current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    # Verify current password
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT password_hash FROM users WHERE username = %s", (current_user["username"],))
+    else:
+        cursor.execute("SELECT password_hash FROM users WHERE username = ?", (current_user["username"],))
+    
+    user = cursor.fetchone()
+    if not user or not bcrypt.checkpw(password_data.current_password.encode('utf-8'), user[0].encode('utf-8')):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Update password
+    new_password_hash = bcrypt.hashpw(password_data.new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s", 
+                      (new_password_hash, current_user["username"]))
+    else:
+        cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
+                      (new_password_hash, current_user["username"]))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Password changed successfully"}
+
+# Admin routes
+@app.get("/admin/check")
+async def check_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {"is_admin": True}
+
+@app.get("/admin/users")
+async def get_all_users(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, email, full_name, role, is_active, created_at FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    
+    return [
+        {
+            "id": user[0],
+            "username": user[1],
+            "email": user[2],
+            "full_name": user[3],
+            "role": user[4],
+            "is_active": user[5],
+            "created_at": user[6]
+        }
+        for user in users
+    ]
+
+# Journal routes
+@app.post("/journal/entries")
+async def create_journal_entry(entry: JournalEntry, current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    images_json = json.dumps(entry.images) if entry.images else None
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute('''
+            INSERT INTO journal_entries 
+            (user_id, date, location, temperature, humidity, rainfall, wind_speed, species_found, entry_text, images)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (current_user["id"], entry.date, entry.location, entry.temperature, entry.humidity,
+              entry.rainfall, entry.wind_speed, entry.species_found, entry.entry_text, images_json))
+    else:
+        cursor.execute('''
+            INSERT INTO journal_entries 
+            (user_id, date, location, temperature, humidity, rainfall, wind_speed, species_found, entry_text, images)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (current_user["id"], entry.date, entry.location, entry.temperature, entry.humidity,
+              entry.rainfall, entry.wind_speed, entry.species_found, entry.entry_text, images_json))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Journal entry created successfully"}
+
+@app.get("/journal/entries")
+async def get_journal_entries(current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT * FROM journal_entries WHERE user_id = %s ORDER BY created_at DESC", 
+                      (current_user["id"],))
+    else:
+        cursor.execute("SELECT * FROM journal_entries WHERE user_id = ? ORDER BY created_at DESC", 
+                      (current_user["id"],))
+    
+    entries = cursor.fetchall()
+    conn.close()
+    
+    return [
+        {
+            "id": entry[0],
+            "date": entry[2],
+            "location": entry[3],
+            "temperature": entry[4],
+            "humidity": entry[5],
+            "rainfall": entry[6],
+            "wind_speed": entry[7],
+            "species_found": entry[8],
+            "entry_text": entry[9],
+            "images": json.loads(entry[10]) if entry[10] else [],
+            "created_at": entry[11]
+        }
+        for entry in entries
+    ]
+
+@app.get("/journal/stats")
+async def get_journal_stats(current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT * FROM journal_entries WHERE user_id = %s", (current_user["id"],))
+    else:
+        cursor.execute("SELECT * FROM journal_entries WHERE user_id = ?", (current_user["id"],))
+    
+    entries = cursor.fetchall()
+    conn.close()
+    
+    total_entries = len(entries)
+    species = set()
+    locations = set()
+    total_photos = 0
+    
+    for entry in entries:
+        if entry[8]:  # species_found
+            species.update(s.strip().lower() for s in entry[8].split(','))
+        if entry[3]:  # location
+            locations.add(entry[3].lower())
+        if entry[10]:  # images
+            try:
+                images = json.loads(entry[10])
+                total_photos += len(images) if isinstance(images, list) else 1
+            except:
+                pass
+    
+    return {
+        "total_entries": total_entries,
+        "unique_species": len(species),
+        "unique_locations": len(locations),
+        "total_photos": total_photos
+    }
+
+# Health check
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "environment": ENVIRONMENT}
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    init_database()
+
+# For Render deployment
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
