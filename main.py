@@ -61,9 +61,9 @@ MUSHROOM_PROFILES = {
     "wood_blewits": {"temp_range": (4, 8), "humidity_min": 70, "rain_min": 5, "rain_max": 50, "wind_max": 12},
     "morels": {"temp_range": (12, 21), "humidity_min": 70, "rain_min": 10, "rain_max": 50, "wind_max": 4},
     "blushers": {"temp_range": (8, 26), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 16},
-    "slippery_jills": {"temp_range": (12, 24), "humidity_min": 65, "rain_min": 0.5, "rain_max": 30, "wind_max": 9},
-    "weeping_bolete": {"temp_range": (11, 23), "humidity_min": 60, "rain_min": 2, "rain_max": 25, "wind_max": 12},
-    "bovine_bolete": {"temp_range": (10, 22), "humidity_min": 60, "rain_min": 2, "rain_max": 28, "wind_max": 12},
+    "slippery_jills": {"temp_range": (9, 24), "humidity_min": 65, "rain_min": 0.5, "rain_max": 30, "wind_max": 15},
+    "weeping_bolete": {"temp_range": (9, 23), "humidity_min": 60, "rain_min": 0.5, "rain_max": 25, "wind_max": 15},
+    "bovine_bolete": {"temp_range": (9, 22), "humidity_min": 60, "rain_min": 0.5, "rain_max": 28, "wind_max": 15},
     "chicken_of_the_woods": {"temp_range": (23, 30), "humidity_min": 70, "rain_min": 10, "rain_max": 40, "wind_max": 10},
     "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
 }
