@@ -25,21 +25,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS Configuration
+# CORS Configuration - FIXED
 if ENVIRONMENT == "production":
-    allowed_origins = [
-        FRONTEND_URL,
-        if ENVIRONMENT == "production":
     allowed_origins = [
         FRONTEND_URL,
         "https://www.foragersfriend.info", 
         "https://foragersfriend.info",      
-        "https://*.onrender.com",
-        "https://*.netlify.app",
-        "https://*.vercel.app"
-    ]
-else:
-    allowed_origins = ["*"]
         "https://*.onrender.com",
         "https://*.netlify.app",
         "https://*.vercel.app"
@@ -541,6 +532,49 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
         }
         for user in users
     ]
+
+@app.get("/admin/stats")
+async def get_admin_stats(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    # Get user statistics
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = true")
+        active_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURRENT_DATE")
+        new_users_today = cursor.fetchone()[0]
+    else:
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        active_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = DATE('now')")
+        new_users_today = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "admin_users": admin_users,
+        "new_users_today": new_users_today
+    }
 
 # Journal routes
 @app.post("/journal/entries")
