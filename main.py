@@ -29,6 +29,17 @@ app = FastAPI(
 if ENVIRONMENT == "production":
     allowed_origins = [
         FRONTEND_URL,
+        if ENVIRONMENT == "production":
+    allowed_origins = [
+        FRONTEND_URL,
+        "https://www.foragersfriend.info", 
+        "https://foragersfriend.info",      
+        "https://*.onrender.com",
+        "https://*.netlify.app",
+        "https://*.vercel.app"
+    ]
+else:
+    allowed_origins = ["*"]
         "https://*.onrender.com",
         "https://*.netlify.app",
         "https://*.vercel.app"
