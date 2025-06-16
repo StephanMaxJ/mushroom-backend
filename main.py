@@ -1,4 +1,4 @@
-# main.py - Complete Updated Version with Authentication + Journal Admin Features
+# main.py - Updated with Authentication + Your Weather Features
 import os
 from fastapi import FastAPI, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -114,13 +114,13 @@ def init_database():
                 user_id INTEGER REFERENCES users(id),
                 date DATE NOT NULL,
                 location VARCHAR(200) NOT NULL,
-                species_found VARCHAR(500),
-                quantity VARCHAR(100),
-                weather_conditions VARCHAR(100),
                 temperature FLOAT,
                 humidity FLOAT,
-                notes TEXT NOT NULL,
-                photo_url VARCHAR(500),
+                rainfall FLOAT,
+                wind_speed FLOAT,
+                species_found TEXT,
+                entry_text TEXT NOT NULL,
+                images TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -156,13 +156,13 @@ def init_database():
                 user_id INTEGER,
                 date TEXT NOT NULL,
                 location TEXT NOT NULL,
-                species_found TEXT,
-                quantity TEXT,
-                weather_conditions TEXT,
                 temperature REAL,
                 humidity REAL,
-                notes TEXT NOT NULL,
-                photo_url TEXT,
+                rainfall REAL,
+                wind_speed REAL,
+                species_found TEXT,
+                entry_text TEXT NOT NULL,
+                images TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
@@ -202,15 +202,16 @@ class PasswordChange(BaseModel):
     current_password: str
     new_password: str
 
-class JournalEntryCreate(BaseModel):
+class JournalEntry(BaseModel):
     date: str
     location: str
-    species_found: str = ""
-    quantity: str = ""
-    weather_conditions: str = ""
-    temperature: str = ""
-    humidity: str = ""
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    rainfall: Optional[float] = None
+    wind_speed: Optional[float] = None
+    species_found: Optional[str] = None
     entry_text: str
+    images: Optional[List[dict]] = None
 
 # Authentication functions
 def create_access_token(data: dict):
@@ -281,7 +282,7 @@ def average(values):
     clean = [v for v in values if v is not None]
     return sum(clean) / len(clean) if clean else 0
 
-# Routes - Weather check endpoint
+# Routes - Your existing weather check endpoint (modified to support both authenticated and non-authenticated users)
 @app.get("/check")
 def check_conditions(lat: float = Query(...), lon: float = Query(...), current_user: dict = Depends(get_current_user)):
     """Weather conditions check - now requires authentication"""
@@ -532,37 +533,71 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
         for user in users
     ]
 
-# Journal routes
-@app.post("/journal/entries")
-async def create_journal_entry(
-    entry: JournalEntryCreate = Depends(),
-    photo: UploadFile = File(None),
-    current_user: dict = Depends(get_current_user)
-):
-    """Create journal entry with optional photo upload"""
+@app.get("/admin/stats")
+async def get_admin_stats(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
     conn = get_database_connection()
     cursor = conn.cursor()
     
-    photo_url = None
-    if photo:
-        # Here you would implement photo upload to cloud storage
-        # For now, we'll just store the filename
-        photo_url = f"uploads/{photo.filename}"
+    # Get user statistics
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = true")
+        active_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURRENT_DATE")
+        new_users_today = cursor.fetchone()[0]
+    else:
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        active_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = DATE('now')")
+        new_users_today = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "admin_users": admin_users,
+        "new_users_today": new_users_today
+    }
+
+# Journal routes
+@app.post("/journal/entries")
+async def create_journal_entry(entry: JournalEntry, current_user: dict = Depends(get_current_user)):
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    
+    images_json = json.dumps(entry.images) if entry.images else None
     
     if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
         cursor.execute('''
             INSERT INTO journal_entries 
-            (user_id, date, location, species_found, quantity, weather_conditions, temperature, humidity, notes, photo_url)
+            (user_id, date, location, temperature, humidity, rainfall, wind_speed, species_found, entry_text, images)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (current_user["id"], entry.date, entry.location, entry.species_found, entry.quantity,
-              entry.weather_conditions, entry.temperature, entry.humidity, entry.entry_text, photo_url))
+        ''', (current_user["id"], entry.date, entry.location, entry.temperature, entry.humidity,
+              entry.rainfall, entry.wind_speed, entry.species_found, entry.entry_text, images_json))
     else:
         cursor.execute('''
             INSERT INTO journal_entries 
-            (user_id, date, location, species_found, quantity, weather_conditions, temperature, humidity, notes, photo_url)
+            (user_id, date, location, temperature, humidity, rainfall, wind_speed, species_found, entry_text, images)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (current_user["id"], entry.date, entry.location, entry.species_found, entry.quantity,
-              entry.weather_conditions, entry.temperature, entry.humidity, entry.entry_text, photo_url))
+        ''', (current_user["id"], entry.date, entry.location, entry.temperature, entry.humidity,
+              entry.rainfall, entry.wind_speed, entry.species_found, entry.entry_text, images_json))
     
     conn.commit()
     conn.close()
@@ -589,48 +624,17 @@ async def get_journal_entries(current_user: dict = Depends(get_current_user)):
             "id": entry[0],
             "date": entry[2],
             "location": entry[3],
-            "species_found": entry[4],
-            "quantity": entry[5],
-            "weather_conditions": entry[6],
-            "temperature": entry[7],
-            "humidity": entry[8],
-            "notes": entry[9],
-            "photo_url": entry[10],
+            "temperature": entry[4],
+            "humidity": entry[5],
+            "rainfall": entry[6],
+            "wind_speed": entry[7],
+            "species_found": entry[8],
+            "entry_text": entry[9],
+            "images": json.loads(entry[10]) if entry[10] else [],
             "created_at": entry[11]
         }
         for entry in entries
     ]
-
-@app.delete("/journal/entries/{entry_id}")
-async def delete_journal_entry(entry_id: int, current_user: dict = Depends(get_current_user)):
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    # Check if entry belongs to user
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT user_id FROM journal_entries WHERE id = %s", (entry_id,))
-    else:
-        cursor.execute("SELECT user_id FROM journal_entries WHERE id = ?", (entry_id,))
-    
-    entry = cursor.fetchone()
-    if not entry:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Journal entry not found")
-    
-    if entry[0] != current_user["id"]:
-        conn.close()
-        raise HTTPException(status_code=403, detail="Not authorized to delete this entry")
-    
-    # Delete entry
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("DELETE FROM journal_entries WHERE id = %s", (entry_id,))
-    else:
-        cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
-    
-    conn.commit()
-    conn.close()
-    
-    return {"message": "Journal entry deleted successfully"}
 
 @app.get("/journal/stats")
 async def get_journal_stats(current_user: dict = Depends(get_current_user)):
@@ -651,349 +655,22 @@ async def get_journal_stats(current_user: dict = Depends(get_current_user)):
     total_photos = 0
     
     for entry in entries:
-        if entry[4]:  # species_found
-            species.update(s.strip().lower() for s in entry[4].split(','))
+        if entry[8]:  # species_found
+            species.update(s.strip().lower() for s in entry[8].split(','))
         if entry[3]:  # location
             locations.add(entry[3].lower())
-        if entry[10]:  # photo_url
-            total_photos += 1
+        if entry[10]:  # images
+            try:
+                images = json.loads(entry[10])
+                total_photos += len(images) if isinstance(images, list) else 1
+            except:
+                pass
     
     return {
         "total_entries": total_entries,
         "unique_species": len(species),
         "unique_locations": len(locations),
         "total_photos": total_photos
-    }
-
-# Admin Journal Management Routes
-@app.get("/admin/journal-entries")
-async def get_all_journal_entries(current_user: dict = Depends(get_current_user)):
-    """Get all journal entries from all users with user information (admin only)"""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    try:
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute("""
-                SELECT j.*, u.username, u.email 
-                FROM journal_entries j 
-                JOIN users u ON j.user_id = u.id 
-                ORDER BY j.created_at DESC
-            """)
-        else:
-            cursor.execute("""
-                SELECT j.*, u.username, u.email 
-                FROM journal_entries j 
-                JOIN users u ON j.user_id = u.id 
-                ORDER BY j.created_at DESC
-            """)
-        
-        entries = cursor.fetchall()
-        conn.close()
-        
-        journal_list = []
-        for entry in entries:
-            entry_data = {
-                "id": entry[0],
-                "user_id": entry[1],
-                "date": entry[2],
-                "location": entry[3],
-                "species_found": entry[4],
-                "quantity": entry[5],
-                "weather_conditions": entry[6],
-                "temperature": entry[7],
-                "humidity": entry[8],
-                "notes": entry[9],
-                "photo_url": entry[10],
-                "created_at": entry[11],
-                "username": entry[12],
-                "email": entry[13]
-            }
-            journal_list.append(entry_data)
-        
-        return journal_list
-        
-    except Exception as e:
-        conn.close()
-        raise HTTPException(status_code=500, detail=f"Error fetching journal entries: {str(e)}")
-
-@app.get("/admin/journal-stats")
-async def get_admin_journal_stats(current_user: dict = Depends(get_current_user)):
-    """Get comprehensive journal statistics for admin dashboard"""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # Total entries
-        cursor.execute("SELECT COUNT(*) FROM journal_entries")
-        total_entries = cursor.fetchone()[0]
-        
-        # Unique species count
-        cursor.execute("""
-            SELECT COUNT(DISTINCT species_found) 
-            FROM journal_entries 
-            WHERE species_found IS NOT NULL AND species_found != ''
-        """)
-        unique_species = cursor.fetchone()[0] or 0
-        
-        # Unique locations count
-        cursor.execute("""
-            SELECT COUNT(DISTINCT location) 
-            FROM journal_entries 
-            WHERE location IS NOT NULL AND location != ''
-        """)
-        unique_locations = cursor.fetchone()[0] or 0
-        
-        # Most active users (users with most journal entries)
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute("""
-                SELECT u.username, COUNT(j.id) as entry_count
-                FROM users u
-                LEFT JOIN journal_entries j ON u.id = j.user_id
-                GROUP BY u.id, u.username
-                HAVING COUNT(j.id) > 0
-                ORDER BY entry_count DESC
-                LIMIT 10
-            """)
-        else:
-            cursor.execute("""
-                SELECT u.username, COUNT(j.id) as entry_count
-                FROM users u
-                LEFT JOIN journal_entries j ON u.id = j.user_id
-                GROUP BY u.id, u.username
-                HAVING COUNT(j.id) > 0
-                ORDER BY entry_count DESC
-                LIMIT 10
-            """)
-        
-        most_active_users = cursor.fetchall()
-        active_users_list = [
-            {"username": username, "entry_count": count}
-            for username, count in most_active_users
-        ]
-        
-        # Popular species (most logged species)
-        cursor.execute("""
-            SELECT species_found, COUNT(*) as count
-            FROM journal_entries 
-            WHERE species_found IS NOT NULL AND species_found != ''
-            GROUP BY species_found
-            ORDER BY count DESC
-            LIMIT 10
-        """)
-        popular_species = cursor.fetchall()
-        species_list = [
-            {"name": species, "count": count}
-            for species, count in popular_species
-        ]
-        
-        # Popular locations (most visited locations)
-        cursor.execute("""
-            SELECT location, COUNT(*) as count
-            FROM journal_entries 
-            WHERE location IS NOT NULL AND location != ''
-            GROUP BY location
-            ORDER BY count DESC
-            LIMIT 10
-        """)
-        popular_locations = cursor.fetchall()
-        locations_list = [
-            {"name": location, "count": count}
-            for location, count in popular_locations
-        ]
-        
-        # Recent activity (last 10 journal entries with user info)
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute("""
-                SELECT j.created_at, u.username, j.species_found, j.location
-                FROM journal_entries j
-                JOIN users u ON j.user_id = u.id
-                ORDER BY j.created_at DESC
-                LIMIT 10
-            """)
-        else:
-            cursor.execute("""
-                SELECT j.created_at, u.username, j.species_found, j.location
-                FROM journal_entries j
-                JOIN users u ON j.user_id = u.id
-                ORDER BY j.created_at DESC
-                LIMIT 10
-            """)
-        
-        recent_activity = cursor.fetchall()
-        activity_list = []
-        for created_at, username, species, location in recent_activity:
-            action = f"Logged {species or 'species'} at {location}"
-            activity_list.append({
-                "username": username,
-                "action": action,
-                "timestamp": created_at
-            })
-        
-        conn.close()
-        
-        return {
-            "total_entries": total_entries,
-            "unique_species": unique_species,
-            "unique_locations": unique_locations,
-            "most_active_users": active_users_list,
-            "popular_species": species_list,
-            "popular_locations": locations_list,
-            "recent_activity": activity_list
-        }
-        
-    except Exception as e:
-        conn.close()
-        raise HTTPException(status_code=500, detail=f"Error fetching admin journal stats: {str(e)}")
-
-@app.delete("/admin/journal-entries/{entry_id}")
-async def delete_journal_entry_admin(entry_id: int, current_user: dict = Depends(get_current_user)):
-    """Delete a journal entry (admin only)"""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # Check if entry exists and get details
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute("""
-                SELECT j.*, u.username 
-                FROM journal_entries j 
-                JOIN users u ON j.user_id = u.id 
-                WHERE j.id = %s
-            """, (entry_id,))
-        else:
-            cursor.execute("""
-                SELECT j.*, u.username 
-                FROM journal_entries j 
-                JOIN users u ON j.user_id = u.id 
-                WHERE j.id = ?
-            """, (entry_id,))
-        
-        entry = cursor.fetchone()
-        
-        if not entry:
-            conn.close()
-            raise HTTPException(status_code=404, detail="Journal entry not found")
-        
-        # Delete the entry
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute("DELETE FROM journal_entries WHERE id = %s", (entry_id,))
-        else:
-            cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return {
-            "message": f"Journal entry {entry_id} deleted successfully",
-            "deleted_entry": {
-                "id": entry_id,
-                "user": entry[12],  # username
-                "species": entry[4],  # species_found
-                "location": entry[3],  # location
-                "date": entry[2]  # date
-            }
-        }
-        
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as e:
-        conn.rollback()
-        conn.close()
-        raise HTTPException(status_code=500, detail=f"Error deleting journal entry: {str(e)}")
-
-# Updated admin/stats endpoint to include journal data
-@app.get("/admin/stats")
-async def get_admin_stats(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    # Get user statistics
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = true")
-        active_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        admin_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURRENT_DATE")
-        new_users_today = cursor.fetchone()[0]
-        
-        # Add journal statistics
-        cursor.execute("SELECT COUNT(*) FROM journal_entries")
-        total_entries = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(DISTINCT species_found) 
-            FROM journal_entries 
-            WHERE species_found IS NOT NULL AND species_found != ''
-        """)
-        unique_species = cursor.fetchone()[0] or 0
-        
-        cursor.execute("""
-            SELECT COUNT(DISTINCT location) 
-            FROM journal_entries 
-            WHERE location IS NOT NULL AND location != ''
-        """)
-        unique_locations = cursor.fetchone()[0] or 0
-        
-    else:
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
-        active_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        admin_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at) = DATE('now')")
-        new_users_today = cursor.fetchone()[0]
-        
-        # Add journal statistics
-        cursor.execute("SELECT COUNT(*) FROM journal_entries")
-        total_entries = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(DISTINCT species_found) 
-            FROM journal_entries 
-            WHERE species_found IS NOT NULL AND species_found != ''
-        """)
-        unique_species = cursor.fetchone()[0] or 0
-        
-        cursor.execute("""
-            SELECT COUNT(DISTINCT location) 
-            FROM journal_entries 
-            WHERE location IS NOT NULL AND location != ''
-        """)
-        unique_locations = cursor.fetchone()[0] or 0
-    
-    conn.close()
-    
-    return {
-        "total_users": total_users,
-        "active_users": active_users,
-        "admin_users": admin_users,
-        "new_users_today": new_users_today,
-        "total_entries": total_entries,
-        "unique_species": unique_species,
-        "unique_locations": unique_locations
     }
 
 # Health check
