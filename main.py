@@ -1,718 +1,870 @@
-# main.py - Fixed for Render Deployment
+# main.py - Fixed and Working Version
 import os
 from fastapi import FastAPI, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
-import requests
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-import jwt
-import bcrypt
-import sqlite3
-from typing import List, Optional
+import secrets
+import requests
 import json
-import asyncio
+import sqlite3
+from passlib.context import CryptContext
+import jwt
+from contextlib import asynccontextmanager
 
-# Environment Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key-change-in-production")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./mushroom_app.db")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+# Try to import PostgreSQL adapter
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
+    print("PostgreSQL adapter not available, using SQLite")
 
-app = FastAPI(
-    title="Mushroom Foraging API",
-    description="API for mushroom identification, foraging journal, and community",
-    version="1.0.0"
-)
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL", None)
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 
-# CORS Configuration
-if ENVIRONMENT == "production":
-    allowed_origins = [
-        FRONTEND_URL,
-        "https://www.foragersfriend.info", 
-        "https://foragersfriend.info",      
-        "https://*.onrender.com",
-        "https://*.netlify.app",
-        "https://*.vercel.app"
-    ]
-else:
-    allowed_origins = ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Security
 security = HTTPBearer()
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Your existing mushroom profiles
-MUSHROOM_PROFILES = {
-    "porcini": {"temp_range": (12, 28), "humidity_min": 70, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
-    "pine_rings": {"temp_range": (10, 22), "humidity_min": 65, "rain_min": 0.1, "rain_max": 80, "wind_max": 16},
-    "poplar_boletes": {"temp_range": (10, 23), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 16},
-    "agaricus": {"temp_range": (14, 26), "humidity_min": 65, "rain_min": 0.8, "rain_max": 50, "wind_max": 11},
-    "white_parasols": {"temp_range": (13, 28), "humidity_min": 60, "rain_min": 0, "rain_max": 30, "wind_max": 12},
-    "wood_blewits": {"temp_range": (4, 8), "humidity_min": 70, "rain_min": 5, "rain_max": 50, "wind_max": 12},
-    "morels": {"temp_range": (12, 21), "humidity_min": 70, "rain_min": 10, "rain_max": 50, "wind_max": 4},
-    "blushers": {"temp_range": (8, 26), "humidity_min": 60, "rain_min": 0.1, "rain_max": 35, "wind_max": 16},
-    "slippery_jills": {"temp_range": (9, 24), "humidity_min": 65, "rain_min": 0.5, "rain_max": 30, "wind_max": 15},
-    "weeping_bolete": {"temp_range": (9, 23), "humidity_min": 60, "rain_min": 0.5, "rain_max": 25, "wind_max": 15},
-    "bovine_bolete": {"temp_range": (9, 22), "humidity_min": 60, "rain_min": 0.5, "rain_max": 28, "wind_max": 15},
-    "chicken_of_the_woods": {"temp_range": (23, 30), "humidity_min": 70, "rain_min": 10, "rain_max": 40, "wind_max": 10},
-    "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
-}
+# Weather API configuration
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
-# Database functions
-def get_database_connection():
-    """Get database connection - supports both SQLite and PostgreSQL"""
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        try:
-            import psycopg2
-            from urllib.parse import urlparse
-            result = urlparse(DATABASE_URL)
-            return psycopg2.connect(
-                database=result.path[1:],
-                user=result.username,
-                password=result.password,
-                host=result.hostname,
-                port=result.port
-            )
-        except ImportError:
-            print("Warning: psycopg2 not installed. Falling back to SQLite.")
-            return sqlite3.connect("mushroom_app.db")
+# Database connection
+def get_db_connection():
+    if DATABASE_URL and POSTGRES_AVAILABLE:
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     else:
-        db_path = DATABASE_URL.replace("sqlite:///", "")
-        return sqlite3.connect(db_path)
+        conn = sqlite3.connect('foragersfriend.db')
+        conn.row_factory = sqlite3.Row
+        return conn
 
-def init_database():
-    """Initialize database tables"""
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        # PostgreSQL tables
-        try:
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE NOT NULL,
-                    email VARCHAR(100) UNIQUE NOT NULL,
-                    password_hash VARCHAR(255) NOT NULL,
-                    full_name VARCHAR(100),
-                    bio TEXT,
-                    location VARCHAR(100),
-                    role VARCHAR(20) DEFAULT 'user',
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS journal_entries (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id),
-                    date DATE NOT NULL,
-                    location VARCHAR(200) NOT NULL,
-                    temperature FLOAT,
-                    humidity FLOAT,
-                    rainfall FLOAT,
-                    wind_speed FLOAT,
-                    species_found TEXT,
-                    entry_text TEXT NOT NULL,
-                    images TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS forum_posts (
-                    id SERIAL PRIMARY KEY,
-                    title VARCHAR(300) NOT NULL,
-                    content TEXT NOT NULL,
-                    category VARCHAR(50) DEFAULT 'general',
-                    author VARCHAR(100) NOT NULL,
-                    source_url TEXT,
-                    auto_generated BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    replies_count INTEGER DEFAULT 0,
-                    post_type VARCHAR(50) DEFAULT 'user'
-                )
-            ''')
-            
-            # Insert admin user
-            password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, email, password_hash, full_name, role)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (username) DO NOTHING
-            ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
-        except Exception as e:
-            print(f"PostgreSQL setup failed, falling back to SQLite: {e}")
-            # Fallback to SQLite
-            conn.close()
-            conn = sqlite3.connect("mushroom_app.db")
-            cursor = conn.cursor()
-    
-    # SQLite tables (fallback or primary)
-    if not DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgres://"):
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                full_name TEXT,
-                bio TEXT,
-                location TEXT,
-                role TEXT DEFAULT 'user',
-                is_active INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS journal_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                date TEXT NOT NULL,
-                location TEXT NOT NULL,
-                temperature REAL,
-                humidity REAL,
-                rainfall REAL,
-                wind_speed REAL,
-                species_found TEXT,
-                entry_text TEXT NOT NULL,
-                images TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS forum_posts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                category TEXT DEFAULT 'general',
-                author TEXT NOT NULL,
-                source_url TEXT,
-                auto_generated INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                replies_count INTEGER DEFAULT 0,
-                post_type TEXT DEFAULT 'user'
-            )
-        ''')
-        
-        # Insert admin user
-        password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        cursor.execute('''
-            INSERT OR IGNORE INTO users (username, email, password_hash, full_name, role)
-            VALUES (?, ?, ?, ?, ?)
-        ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
-    
-    conn.commit()
-    conn.close()
-
-# Models
-class User(BaseModel):
-    username: str
-    email: EmailStr
-    full_name: Optional[str] = None
-    bio: Optional[str] = None
-    location: Optional[str] = None
-
+# Pydantic models
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
     password: str
-    full_name: Optional[str] = None
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class User(BaseModel):
+    id: int
+    username: str
+    email: str
+    role: str = "user"
+    created_at: Optional[datetime] = None
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
-    bio: Optional[str] = None
     location: Optional[str] = None
+    bio: Optional[str] = None
+    favorite_mushroom: Optional[str] = None
 
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str
 
-class JournalEntry(BaseModel):
+class JournalEntryCreate(BaseModel):
     date: str
     location: str
-    temperature: Optional[float] = None
-    humidity: Optional[float] = None
-    rainfall: Optional[float] = None
-    wind_speed: Optional[float] = None
-    species_found: Optional[str] = None
+    species_found: str = ""
+    quantity: str = ""
+    weather_conditions: str = ""
+    temperature: str = ""
+    humidity: str = ""
     entry_text: str
-    images: Optional[List[dict]] = None
+    photo_url: Optional[str] = None
+
+class WeatherRequest(BaseModel):
+    lat: float
+    lon: float
 
 class ForumPost(BaseModel):
     title: str
     content: str
     category: str
+    author: str
+    image_url: Optional[str] = None
 
-# Authentication functions
+# Startup event
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize database
+    init_db()
+    print("Database initialized")
+    yield
+    print("Shutting down")
+
+# Create FastAPI app
+app = FastAPI(lifespan=lifespan)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://www.foragersfriend.info", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Database initialization
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Create users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255),
+                location VARCHAR(255),
+                bio TEXT,
+                favorite_mushroom VARCHAR(255),
+                role VARCHAR(50) DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                google_id VARCHAR(255) UNIQUE
+            )
+        ''')
+        
+        # Create journal_entries table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                date VARCHAR(10) NOT NULL,
+                location VARCHAR(255),
+                species_found VARCHAR(255),
+                quantity VARCHAR(100),
+                weather_conditions VARCHAR(255),
+                temperature VARCHAR(50),
+                humidity VARCHAR(50),
+                entry_text TEXT,
+                photo_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create forum_posts table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS forum_posts (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                content TEXT NOT NULL,
+                category VARCHAR(100),
+                author VARCHAR(255),
+                author_id INTEGER REFERENCES users(id),
+                image_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_auto_generated BOOLEAN DEFAULT FALSE,
+                source VARCHAR(255)
+            )
+        ''')
+        
+        # Create admin user if it doesn't exist
+        cursor.execute("SELECT * FROM users WHERE username = %s", ("admin",))
+        if not cursor.fetchone():
+            admin_password = pwd_context.hash("admin123")
+            cursor.execute(
+                "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+                ("admin", "admin@mushroomapp.com", admin_password, "admin")
+            )
+        
+        conn.commit()
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+# Helper functions
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def verify_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            return None
-        return username
-    except jwt.PyJWTError:
-        return None
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    username = verify_token(credentials.credentials)
-    if username is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = verify_token(token)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id, username, email, role FROM users WHERE username = %s", (payload["sub"],))
+        user = cursor.fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        return User(
+            id=user["id"],
+            username=user["username"],
+            email=user["email"],
+            role=user["role"]
         )
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
-    else:
-        cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
-    
-    user = cursor.fetchone()
-    conn.close()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    return {
-        "id": user[0],
-        "username": user[1],
-        "email": user[2],
-        "full_name": user[4],
-        "bio": user[5],
-        "location": user[6],
-        "role": user[7],
-        "is_active": user[8],
-        "created_at": user[9]
-    }
-
-# Utility functions
-def get_season():
-    month = datetime.utcnow().month
-    if 12 <= month <= 2:
-        return "Summer 🌞"
-    elif 3 <= month <= 5:
-        return "Autumn 🍂"
-    elif 6 <= month <= 8:
-        return "Winter 🌧️"
-    else:
-        return "Spring 🌸"
-
-def average(values):
-    clean = [v for v in values if v is not None]
-    return sum(clean) / len(clean) if clean else 0
-
-# News aggregation functions (simplified for deployment)
-def score_article_relevance(title: str, content: str) -> int:
-    """Score article relevance to mushroom foraging (0-100)"""
-    mushroom_keywords = [
-        "mushroom", "fungi", "mycology", "foraging", "porcini", "morel", 
-        "chanterelle", "oyster mushroom", "shiitake", "wild mushroom"
-    ]
-    
-    score = 0
-    text = f"{title} {content}".lower()
-    
-    for keyword in mushroom_keywords:
-        if keyword in text:
-            score += 15
-    
-    return min(score, 100)
-
-async def fetch_simple_news() -> List[dict]:
-    """Simplified news fetching for deployment"""
-    articles = []
-    
-    try:
-        # Simple Reddit API call (no dependencies)
-        url = "https://www.reddit.com/r/mycology/hot.json?limit=5"
-        headers = {'User-Agent': 'ForagersBot/1.0'}
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            
-            for post in data.get('data', {}).get('children', []):
-                post_data = post.get('data', {})
-                
-                if post_data.get('score', 0) > 20:
-                    title = post_data.get('title', '')
-                    content = post_data.get('selftext', '')
-                    
-                    score = score_article_relevance(title, content)
-                    if score >= 20:
-                        articles.append({
-                            "title": f"🔥 Reddit: {title}",
-                            "content": f"{content[:300]}...\n\n💬 {post_data.get('num_comments', 0)} comments\n\n🔗 [View on Reddit](https://reddit.com{post_data.get('permalink')})",
-                            "source": "Reddit r/mycology",
-                            "url": f"https://reddit.com{post_data.get('permalink')}",
-                            "published_at": datetime.now().isoformat(),
-                            "category": "general",
-                            "post_type": "community"
-                        })
-        
-        await asyncio.sleep(1)  # Rate limiting
-        
-    except Exception as e:
-        print(f"News fetch error: {e}")
-    
-    return articles
-
-async def save_article_to_forum(article_data: dict, author_username: str = "ForagersBot"):
-    """Save article as forum post"""
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    try:
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-            cursor.execute('''
-                INSERT INTO forum_posts (title, content, category, author, source_url, auto_generated, created_at, post_type)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ''', (
-                article_data['title'],
-                article_data['content'],
-                article_data['category'],
-                author_username,
-                article_data.get('url', ''),
-                True,
-                article_data['published_at'],
-                article_data.get('post_type', 'news')
-            ))
-        else:
-            cursor.execute('''
-                INSERT INTO forum_posts (title, content, category, author, source_url, auto_generated, created_at, post_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                article_data['title'],
-                article_data['content'], 
-                article_data['category'],
-                author_username,
-                article_data.get('url', ''),
-                1,
-                article_data['published_at'],
-                article_data.get('post_type', 'news')
-            ))
-        
-        conn.commit()
-        print(f"Saved article: {article_data['title']}")
-        
-    except Exception as e:
-        print(f"Error saving article: {e}")
     finally:
+        cursor.close()
         conn.close()
 
-# Routes - Your existing weather check endpoint
-@app.get("/check")
-def check_conditions(lat: float = Query(...), lon: float = Query(...), current_user: dict = Depends(get_current_user)):
-    """Weather conditions check"""
-    weatherapi_key = "b5c1991aa27149c881e173752250505"
-    today = datetime.utcnow().date()
-    start_date = today - timedelta(days=6)
-
-    # Open-Meteo historical data
-    open_meteo_url = (
-        f"https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude={lat}&longitude={lon}&start_date={start_date}&end_date={today}"
-        f"&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
-    )
-    
-    try:
-        meteo_response = requests.get(open_meteo_url, timeout=10)
-        if meteo_response.status_code != 200:
-            raise HTTPException(status_code=500, detail="Open-Meteo data error")
-        meteo_data = meteo_response.json().get("hourly", {})
-    except requests.RequestException:
-        # Fallback values if API fails
-        meteo_data = {"temperature_2m": [15], "relative_humidity_2m": [70], "wind_speed_10m": [10]}
-
-    avg_temp = average(meteo_data.get("temperature_2m", []))
-    avg_humidity = average(meteo_data.get("relative_humidity_2m", []))
-    avg_wind = average(meteo_data.get("wind_speed_10m", []))
-
-    # WeatherAPI rainfall
-    rain_values = []
-    for i in range(7):
-        date = today - timedelta(days=i)
-        try:
-            url = f"http://api.weatherapi.com/v1/history.json?key={weatherapi_key}&q={lat},{lon}&dt={date}"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                day_data = response.json().get("forecast", {}).get("forecastday", [{}])[0].get("day", {})
-                rain_values.append(day_data.get("totalprecip_mm", 0))
-        except requests.RequestException:
-            rain_values.append(0)  # Fallback
-
-    avg_rain = average(rain_values) if rain_values else 0
-
-    # Foraging conditions
-    if avg_temp >= 19 and avg_rain <= 40 and avg_humidity >= 90 and avg_wind <= 8:
-        quality = "🍄‍🟫 Perfect day, there should be lots out"
-    elif avg_temp >= 15 and avg_rain <= 20 and avg_humidity >= 70 and avg_wind <= 12:
-        quality = "✅ Good day, go check your spots you may get lucky"
-    elif avg_temp >= 12 and avg_rain <= 10 and avg_humidity >= 60 and avg_wind <= 15:
-        quality = "❔ Average day, some mushrooms around but not much"
-    else:
-        quality = "❌ Not a good day, you could still check microclimates you know of"
-
-    # Mushroom recommendations
-    recommended = []
-    for name, profile in MUSHROOM_PROFILES.items():
-        t_min, t_max = profile["temp_range"]
-        if (
-            t_min <= avg_temp <= t_max and
-            profile["humidity_min"] <= avg_humidity and
-            profile["rain_min"] <= avg_rain <= profile["rain_max"] and
-            avg_wind <= profile["wind_max"]
-        ):
-            recommended.append(name)
-
-    # Current forecast
-    try:
-        forecast_url = f"http://api.weatherapi.com/v1/current.json?key={weatherapi_key}&q={lat},{lon}"
-        forecast_response = requests.get(forecast_url, timeout=10)
-        current = forecast_response.json().get("current", {}) if forecast_response.status_code == 200 else {}
-    except requests.RequestException:
-        current = {}
-
-    return {
-        "location": {"lat": lat, "lon": lon},
-        "season": get_season(),
-        "foraging_quality": quality,
-        "avg_temperature": round(avg_temp, 1),
-        "avg_precipitation": round(avg_rain, 1),
-        "avg_humidity": round(avg_humidity, 1),
-        "avg_wind_speed": round(avg_wind, 1),
-        "forecast_temperature": current.get("temp_c"),
-        "forecast_humidity": current.get("humidity"),
-        "forecast_precipitation": current.get("precip_mm", 0),
-        "forecast_wind_speed": current.get("wind_kph"),
-        "recommended_mushrooms": recommended,
-        "user": current_user["username"]
-    }
-
-# Authentication routes
-@app.post("/signup")
-async def signup(user: UserCreate):
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    # Check if user exists
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT username FROM users WHERE username = %s OR email = %s", 
-                      (user.username, user.email))
-    else:
-        cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
-                      (user.username, user.email))
-    
-    if cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=400, detail="Username or email already registered")
-    
-    # Hash password and create user
-    password_hash = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute('''
-            INSERT INTO users (username, email, password_hash, full_name)
-            VALUES (%s, %s, %s, %s)
-        ''', (user.username, user.email, password_hash, user.full_name))
-    else:
-        cursor.execute('''
-            INSERT INTO users (username, email, password_hash, full_name)
-            VALUES (?, ?, ?, ?)
-        ''', (user.username, user.email, password_hash, user.full_name))
-    
-    conn.commit()
-    conn.close()
-    
-    access_token = create_access_token(data={"sub": user.username})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "username": user.username
-    }
-
-@app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT username, password_hash FROM users WHERE username = %s", 
-                      (form_data.username,))
-    else:
-        cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
-                      (form_data.username,))
-    
-    user = cursor.fetchone()
-    conn.close()
-    
-    if not user or not bcrypt.checkpw(form_data.password.encode('utf-8'), user[1].encode('utf-8')):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password"
-        )
-    
-    access_token = create_access_token(data={"sub": user[0]})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "username": user[0]
-    }
-
-# User profile routes
-@app.get("/user/profile")
-async def get_user_profile(current_user: dict = Depends(get_current_user)):
+async def get_admin_user(current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-@app.put("/user/profile")
-async def update_user_profile(user_update: UserUpdate, current_user: dict = Depends(get_current_user)):
-    conn = get_database_connection()
+# Routes
+@app.get("/")
+async def read_root():
+    return {"message": "Welcome to Forager's Friend API"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow()}
+
+@app.post("/auth/signup")
+async def signup(user_create: UserCreate):
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute('''
-            UPDATE users SET email = %s, full_name = %s, bio = %s, location = %s
-            WHERE username = %s
-        ''', (user_update.email, user_update.full_name, user_update.bio, 
-              user_update.location, current_user["username"]))
-    else:
-        cursor.execute('''
-            UPDATE users SET email = ?, full_name = ?, bio = ?, location = ?
-            WHERE username = ?
-        ''', (user_update.email, user_update.full_name, user_update.bio, 
-              user_update.location, current_user["username"]))
+    try:
+        # Check if user exists
+        cursor.execute("SELECT id FROM users WHERE username = %s OR email = %s", 
+                      (user_create.username, user_create.email))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Username or email already registered")
+        
+        # Create user
+        password_hash = pwd_context.hash(user_create.password)
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (user_create.username, user_create.email, password_hash)
+        )
+        user_id = cursor.fetchone()["id"]
+        conn.commit()
+        
+        # Create token
+        access_token = create_access_token(data={"sub": user_create.username})
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user_id,
+                "username": user_create.username,
+                "email": user_create.email,
+                "role": "user"
+            }
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.post("/auth/login")
+async def login(user_login: UserLogin):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("SELECT * FROM users WHERE username = %s", (user_login.username,))
+        user = cursor.fetchone()
+        
+        if not user or not pwd_context.verify(user_login.password, user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+        access_token = create_access_token(data={"sub": user["username"]})
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "role": user["role"]
+            }
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/user/profile")
+async def get_profile(current_user: User = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    return {"message": "Profile updated successfully"}
+    try:
+        cursor.execute(
+            "SELECT * FROM users WHERE id = %s",
+            (current_user.id,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "full_name": user.get("full_name", ""),
+            "location": user.get("location", ""),
+            "bio": user.get("bio", ""),
+            "favorite_mushroom": user.get("favorite_mushroom", ""),
+            "role": user["role"],
+            "created_at": user["created_at"]
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.put("/user/profile")
+async def update_profile(
+    user_update: UserUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        update_fields = []
+        update_values = []
+        
+        if user_update.email:
+            update_fields.append("email = %s")
+            update_values.append(user_update.email)
+        if user_update.full_name is not None:
+            update_fields.append("full_name = %s")
+            update_values.append(user_update.full_name)
+        if user_update.location is not None:
+            update_fields.append("location = %s")
+            update_values.append(user_update.location)
+        if user_update.bio is not None:
+            update_fields.append("bio = %s")
+            update_values.append(user_update.bio)
+        if user_update.favorite_mushroom is not None:
+            update_fields.append("favorite_mushroom = %s")
+            update_values.append(user_update.favorite_mushroom)
+        
+        if update_fields:
+            update_values.append(current_user.id)
+            query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
+            cursor.execute(query, update_values)
+            conn.commit()
+        
+        return {"message": "Profile updated successfully"}
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.post("/user/change-password")
-async def change_password(password_data: PasswordChange, current_user: dict = Depends(get_current_user)):
-    conn = get_database_connection()
+async def change_password(
+    password_change: PasswordChange,
+    current_user: User = Depends(get_current_user)
+):
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Verify current password
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT password_hash FROM users WHERE username = %s", (current_user["username"],))
-    else:
-        cursor.execute("SELECT password_hash FROM users WHERE username = ?", (current_user["username"],))
-    
-    user = cursor.fetchone()
-    if not user or not bcrypt.checkpw(password_data.current_password.encode('utf-8'), user[0].encode('utf-8')):
+    try:
+        cursor.execute("SELECT password_hash FROM users WHERE id = %s", (current_user.id,))
+        user = cursor.fetchone()
+        
+        if not pwd_context.verify(password_change.current_password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        
+        new_password_hash = pwd_context.hash(password_change.new_password)
+        cursor.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (new_password_hash, current_user.id)
+        )
+        conn.commit()
+        
+        return {"message": "Password changed successfully"}
+    finally:
+        cursor.close()
         conn.close()
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+@app.post("/journal/entries")
+async def create_journal_entry(
+    date: str = Form(...),
+    location: str = Form(...),
+    species_found: str = Form(""),
+    quantity: str = Form(""),
+    weather_conditions: str = Form(""),
+    temperature: str = Form(""),
+    humidity: str = Form(""),
+    entry_text: str = Form(...),
+    photo: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    # Update password
-    new_password_hash = bcrypt.hashpw(password_data.new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    try:
+        photo_url = None
+        if photo and photo.filename:
+            # Here you would upload to a storage service
+            # For now, we'll store a placeholder
+            photo_url = f"/uploads/{photo.filename}"
+        
+        cursor.execute(
+            """INSERT INTO journal_entries 
+            (user_id, date, location, species_found, quantity, weather_conditions, 
+             temperature, humidity, entry_text, photo_url) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (current_user.id, date, location, species_found, quantity, 
+             weather_conditions, temperature, humidity, entry_text, photo_url)
+        )
+        entry_id = cursor.fetchone()["id"]
+        conn.commit()
+        
+        return {"message": "Journal entry created successfully", "id": entry_id}
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/journal/entries")
+async def get_journal_entries(current_user: User = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s", 
-                      (new_password_hash, current_user["username"]))
-    else:
-        cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
-                      (new_password_hash, current_user["username"]))
+    try:
+        cursor.execute(
+            "SELECT * FROM journal_entries WHERE user_id = %s ORDER BY created_at DESC",
+            (current_user.id,)
+        )
+        entries = cursor.fetchall()
+        
+        return [dict(entry) for entry in entries]
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.delete("/journal/entries/{entry_id}")
+async def delete_journal_entry(
+    entry_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute(
+            "DELETE FROM journal_entries WHERE id = %s AND user_id = %s",
+            (entry_id, current_user.id)
+        )
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        
+        conn.commit()
+        return {"message": "Entry deleted successfully"}
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/journal/stats")
+async def get_journal_stats(current_user: User = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    return {"message": "Password changed successfully"}
+    try:
+        # Total entries
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM journal_entries WHERE user_id = %s",
+            (current_user.id,)
+        )
+        total_entries = cursor.fetchone()["count"]
+        
+        # Unique species
+        cursor.execute(
+            "SELECT COUNT(DISTINCT species_found) as count FROM journal_entries WHERE user_id = %s AND species_found != ''",
+            (current_user.id,)
+        )
+        unique_species = cursor.fetchone()["count"]
+        
+        # Unique locations
+        cursor.execute(
+            "SELECT COUNT(DISTINCT location) as count FROM journal_entries WHERE user_id = %s",
+            (current_user.id,)
+        )
+        unique_locations = cursor.fetchone()["count"]
+        
+        return {
+            "total_entries": total_entries,
+            "unique_species": unique_species,
+            "unique_locations": unique_locations
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.post("/weather/check")
+async def check_weather(weather_request: WeatherRequest):
+    if not OPENWEATHER_API_KEY:
+        raise HTTPException(status_code=500, detail="Weather API key not configured")
+    
+    try:
+        url = f"https://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "lat": weather_request.lat,
+            "lon": weather_request.lon,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric"
+        }
+        
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        temp = data["main"]["temp"]
+        humidity = data["main"]["humidity"]
+        conditions = data["weather"][0]["main"].lower()
+        rain = "rain" in conditions or "drizzle" in conditions
+        
+        is_good = (
+            10 <= temp <= 25 and
+            humidity >= 60 and
+            not rain
+        )
+        
+        recommendation = {
+            "is_good_for_foraging": is_good,
+            "temperature": temp,
+            "humidity": humidity,
+            "conditions": data["weather"][0]["main"],
+            "description": data["weather"][0]["description"],
+            "reasons": []
+        }
+        
+        if temp < 10:
+            recommendation["reasons"].append("Too cold - mushrooms grow slowly")
+        elif temp > 25:
+            recommendation["reasons"].append("Too hot - mushrooms may dry out")
+        else:
+            recommendation["reasons"].append("Good temperature for mushroom growth")
+        
+        if humidity < 60:
+            recommendation["reasons"].append("Low humidity - mushrooms need moisture")
+        else:
+            recommendation["reasons"].append("Good humidity levels")
+        
+        if rain:
+            recommendation["reasons"].append("Recent rain is good, but wait for it to stop")
+        
+        return recommendation
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Weather API error: {str(e)}")
 
 # Admin routes
 @app.get("/admin/check")
-async def check_admin(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return {"is_admin": True}
-
-@app.get("/admin/users")
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    
-    # Get users with journal count
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute('''
-            SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at,
-                   COUNT(j.id) as journal_count
-            FROM users u
-            LEFT JOIN journal_entries j ON u.id = j.user_id
-            GROUP BY u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at
-            ORDER BY u.created_at DESC
-        ''')
-    else:
-        cursor.execute('''
-            SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at,
-                   COUNT(j.id) as journal_count
-            FROM users u
-            LEFT JOIN journal_entries j ON u.id = j.user_id
-            GROUP BY u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at
-            ORDER BY u.created_at DESC
-        ''')
-    
-    users = cursor.fetchall()
-    conn.close()
-    
-    return [
-        {
-            "id": user[0],
-            "username": user[1],
-            "email": user[2],
-            "full_name": user[3],
-            "role": user[4],
-            "is_active": user[5],
-            "created_at": user[6],
-            "journal_count": user[7]
-        }
-        for user in users
-    ]
+async def check_admin(admin_user: User = Depends(get_admin_user)):
+    return {"is_admin": True, "username": admin_user.username}
 
 @app.get("/admin/stats")
-async def get_admin_stats(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    conn = get_database_connection()
+async def get_admin_stats(admin_user: User = Depends(get_admin_user)):
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Get user statistics
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
+    try:
+        stats = {}
         
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = true")
-        active_users = cursor.fetchone()[0]
+        # Total users
+        cursor.execute("SELECT COUNT(*) as count FROM users")
+        stats["total_users"] = cursor.fetchone()["count"]
         
-        cursor.execute("SELECT COUNT(*) FROM
+        # Active users (with journal entries)
+        cursor.execute("SELECT COUNT(DISTINCT user_id) as count FROM journal_entries")
+        stats["active_users"] = cursor.fetchone()["count"]
+        
+        # Total journal entries
+        cursor.execute("SELECT COUNT(*) as count FROM journal_entries")
+        stats["total_entries"] = cursor.fetchone()["count"]
+        
+        # Unique species found
+        cursor.execute("SELECT COUNT(DISTINCT species_found) as count FROM journal_entries WHERE species_found != ''")
+        stats["total_species"] = cursor.fetchone()["count"]
+        
+        # Total locations
+        cursor.execute("SELECT COUNT(DISTINCT location) as count FROM journal_entries")
+        stats["total_locations"] = cursor.fetchone()["count"]
+        
+        # Admin count
+        cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
+        stats["admin_count"] = cursor.fetchone()["count"]
+        
+        # New users today
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM users WHERE DATE(created_at) = DATE('now')"
+        )
+        stats["new_users_today"] = cursor.fetchone()["count"]
+        
+        return stats
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/admin/users")
+async def get_all_users(admin_user: User = Depends(get_admin_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT u.*, COUNT(j.id) as journal_count 
+            FROM users u 
+            LEFT JOIN journal_entries j ON u.id = j.user_id 
+            GROUP BY u.id, u.username, u.email, u.role, u.created_at
+            ORDER BY u.created_at DESC
+        """)
+        users = cursor.fetchall()
+        
+        return [dict(user) for user in users]
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/admin/journal-entries")
+async def get_all_journal_entries(
+    user_id: Optional[int] = None,
+    admin_user: User = Depends(get_admin_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        if user_id:
+            cursor.execute("""
+                SELECT j.*, u.username 
+                FROM journal_entries j 
+                JOIN users u ON j.user_id = u.id 
+                WHERE j.user_id = %s 
+                ORDER BY j.created_at DESC
+            """, (user_id,))
+        else:
+            cursor.execute("""
+                SELECT j.*, u.username 
+                FROM journal_entries j 
+                JOIN users u ON j.user_id = u.id 
+                ORDER BY j.created_at DESC
+            """)
+        
+        entries = cursor.fetchall()
+        return [dict(entry) for entry in entries]
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.delete("/admin/journal-entries/{entry_id}")
+async def admin_delete_entry(
+    entry_id: int,
+    admin_user: User = Depends(get_admin_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM journal_entries WHERE id = %s", (entry_id,))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        
+        conn.commit()
+        return {"message": "Entry deleted successfully"}
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/admin/analytics")
+async def get_admin_analytics(admin_user: User = Depends(get_admin_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Most active users
+        cursor.execute("""
+            SELECT u.username, COUNT(j.id) as entry_count 
+            FROM users u 
+            JOIN journal_entries j ON u.id = j.user_id 
+            GROUP BY u.username 
+            ORDER BY entry_count DESC 
+            LIMIT 5
+        """)
+        most_active = [dict(row) for row in cursor.fetchall()]
+        
+        # Popular species
+        cursor.execute("""
+            SELECT species_found, COUNT(*) as count 
+            FROM journal_entries 
+            WHERE species_found != '' 
+            GROUP BY species_found 
+            ORDER BY count DESC 
+            LIMIT 5
+        """)
+        popular_species = [dict(row) for row in cursor.fetchall()]
+        
+        # Top locations
+        cursor.execute("""
+            SELECT location, COUNT(*) as count 
+            FROM journal_entries 
+            GROUP BY location 
+            ORDER BY count DESC 
+            LIMIT 5
+        """)
+        top_locations = [dict(row) for row in cursor.fetchall()]
+        
+        # Recent activity
+        cursor.execute("""
+            SELECT j.*, u.username 
+            FROM journal_entries j 
+            JOIN users u ON j.user_id = u.id 
+            ORDER BY j.created_at DESC 
+            LIMIT 10
+        """)
+        recent_activity = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            "most_active_users": most_active,
+            "popular_species": popular_species,
+            "top_locations": top_locations,
+            "recent_activity": recent_activity
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+# Forum/News routes (simplified without external dependencies)
+@app.post("/forum/posts")
+async def create_forum_post(
+    post: ForumPost,
+    current_user: User = Depends(get_current_user)
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(
+            """INSERT INTO forum_posts 
+            (title, content, category, author, author_id, image_url) 
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (post.title, post.content, post.category, 
+             current_user.username, current_user.id, post.image_url)
+        )
+        post_id = cursor.fetchone()["id"]
+        conn.commit()
+        
+        return {"message": "Forum post created", "id": post_id}
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/forum/posts")
+async def get_forum_posts(
+    category: Optional[str] = None,
+    is_auto: Optional[bool] = None
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        query = "SELECT * FROM forum_posts WHERE 1=1"
+        params = []
+        
+        if category:
+            query += " AND category = %s"
+            params.append(category)
+        
+        if is_auto is not None:
+            query += " AND is_auto_generated = %s"
+            params.append(is_auto)
+        
+        query += " ORDER BY created_at DESC LIMIT 50"
+        
+        cursor.execute(query, params)
+        posts = cursor.fetchall()
+        
+        return [dict(post) for post in posts]
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.post("/admin/news/fetch-now")
+async def fetch_news_now(admin_user: User = Depends(get_admin_user)):
+    # Simple Reddit API call without external dependencies
+    try:
+        headers = {"User-Agent": "ForagersFriend/1.0"}
+        
+        # Fetch from r/mycology
+        response = requests.get(
+            "https://www.reddit.com/r/mycology/top.json?limit=5&t=week",
+            headers=headers
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            posts_created = 0
+            
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            try:
+                for post in data["data"]["children"]:
+                    post_data = post["data"]
+                    
+                    # Simple mushroom relevance check
+                    title = post_data["title"].lower()
+                    if any(word in title for word in ["mushroom", "fungi", "mycology", "foraging"]):
+                        cursor.execute(
+                            """INSERT INTO forum_posts 
+                            (title, content, category, author, is_auto_generated, source) 
+                            VALUES (%s, %s, %s, %s, %s, %s)""",
+                            (post_data["title"], 
+                             post_data.get("selftext", "")[:500],
+                             "news",
+                             "NewsBot",
+                             True,
+                             "Reddit r/mycology")
+                        )
+                        posts_created += 1
+                
+                conn.commit()
+                return {"message": f"Created {posts_created} news posts"}
+            finally:
+                cursor.close()
+                conn.close()
+        else:
+            return {"message": "Failed to fetch news", "status": response.status_code}
+            
+    except Exception as e:
+        return {"message": f"Error fetching news: {str(e)}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
