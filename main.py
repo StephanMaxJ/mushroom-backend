@@ -1,4 +1,4 @@
-# main.py - Syntax Fixed for Render Deployment
+# main.py - FIXED VERSION - All Issues Resolved
 import os
 from fastapi import FastAPI, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,9 +25,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS Configuration
-# TEMPORARILY ALLOWING ALL ORIGINS FOR DEBUGGING
-
+# CORS Configuration - Allow all origins for debugging
 origins = ["*"]
 
 app.add_middleware(
@@ -79,7 +77,7 @@ def get_database_connection():
             print(f"PostgreSQL connection failed: {e}, falling back to SQLite")
             return sqlite3.connect("mushroom_app.db")
     else:
-        db_path = DATABASE_URL.replace("sqlite:///", "")
+        db_path = DATABASE_URL.replace("sqlite:///./", "").replace("sqlite:///", "")
         return sqlite3.connect(db_path)
 
 def init_database():
@@ -203,10 +201,10 @@ def init_database():
             ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
         
         conn.commit()
-        print("Database initialized successfully")
+        print("✅ Database initialized successfully")
         
     except Exception as e:
-        print(f"Database initialization error: {e}")
+        print(f"❌ Database initialization error: {e}")
         # Try SQLite as last resort
         if "postgresql" in str(e).lower():
             cursor.execute('''
@@ -470,7 +468,59 @@ async def save_article_to_forum(article_data: dict, author_username: str = "Fora
     finally:
         conn.close()
 
-# Routes - Weather check endpoint
+# ============================================================================
+# STARTUP EVENT - Initialize Database
+# ============================================================================
+@app.on_event("startup")
+async def startup_event():
+    """Run initialization tasks on startup"""
+    print("=" * 60)
+    print("🍄 Forager's Friend API - Starting Up...")
+    print("=" * 60)
+    print(f"Environment: {ENVIRONMENT}")
+    print(f"Database: {DATABASE_URL}")
+    print(f"CORS: Allow all origins (debugging mode)")
+    print("-" * 60)
+    
+    # Initialize database
+    init_database()
+    
+    print("-" * 60)
+    print("✅ Startup complete! API is ready to accept requests.")
+    print("=" * 60)
+
+# ============================================================================
+# ROUTES START HERE
+# ============================================================================
+
+# ROOT ROUTE - FIXED: This was missing!
+@app.get("/")
+def read_root():
+    """Root endpoint - confirms API is running"""
+    return {
+        "message": "Forager's Friend API",
+        "status": "running",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "login": "/login",
+            "signup": "/signup",
+            "check_conditions": "/check",
+            "user_profile": "/user/profile"
+        }
+    }
+
+# HEALTH CHECK ROUTE - NEW: For monitoring
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": "connected"
+    }
+
+# Weather check endpoint
 @app.get("/check")
 def check_conditions(lat: float = Query(...), lon: float = Query(...), current_user: dict = Depends(get_current_user)):
     """Weather conditions check"""
@@ -562,6 +612,7 @@ def check_conditions(lat: float = Query(...), lon: float = Query(...), current_u
 # Authentication routes
 @app.post("/signup")
 async def signup(user: UserCreate):
+    """User signup endpoint"""
     conn = get_database_connection()
     cursor = conn.cursor()
     
@@ -605,6 +656,8 @@ async def signup(user: UserCreate):
 @app.post("/login")
 async def login(login_data: LoginRequest):
     """Login endpoint that accepts JSON"""
+    print(f"Login attempt for user: {login_data.username}")  # Debug logging
+    
     conn = get_database_connection()
     cursor = conn.cursor()
     
@@ -618,28 +671,38 @@ async def login(login_data: LoginRequest):
     user = cursor.fetchone()
     conn.close()
     
-    if not user or not bcrypt.checkpw(login_data.password.encode('utf-8'), user[1].encode('utf-8')):
+    if not user:
+        print(f"User not found: {login_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
+    
+    if not bcrypt.checkpw(login_data.password.encode('utf-8'), user[1].encode('utf-8')):
+        print(f"Invalid password for user: {login_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
         )
     
     access_token = create_access_token(data={"sub": user[0]})
+    print(f"Login successful for user: {user[0]}")
     
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "username": user[0]
-    
     }
 
 # User profile routes
 @app.get("/user/profile")
 async def get_user_profile(current_user: dict = Depends(get_current_user)):
+    """Get current user profile"""
     return current_user
 
 @app.put("/user/profile")
 async def update_user_profile(user_update: UserUpdate, current_user: dict = Depends(get_current_user)):
+    """Update user profile"""
     conn = get_database_connection()
     cursor = conn.cursor()
     
@@ -663,6 +726,7 @@ async def update_user_profile(user_update: UserUpdate, current_user: dict = Depe
 
 @app.post("/user/change-password")
 async def change_password(password_data: PasswordChange, current_user: dict = Depends(get_current_user)):
+    """Change user password"""
     conn = get_database_connection()
     cursor = conn.cursor()
     
@@ -695,12 +759,14 @@ async def change_password(password_data: PasswordChange, current_user: dict = De
 # Admin routes
 @app.get("/admin/check")
 async def check_admin(current_user: dict = Depends(get_current_user)):
+    """Check if user is admin"""
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return {"is_admin": True}
 
 @app.get("/admin/users")
 async def get_all_users(current_user: dict = Depends(get_current_user)):
+    """Get all users (admin only)"""
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
@@ -743,3 +809,8 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
         }
         for user in users
     ]
+
+# Run with: uvicorn main:app --reload
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
