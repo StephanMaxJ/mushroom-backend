@@ -5,7 +5,9 @@ app = FastAPI()
 
 # CORS settings
 origins = [
-    "https://mushroom-backend-frwl.onrender.com",
+    "https://www.foragersfriend.info",
+    "https://foragersfriend.info",
+    "http://localhost:8000",  # For local development
     # Add other allowed origins here.
 ]
 
