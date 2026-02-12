@@ -60,34 +60,50 @@ MUSHROOM_PROFILES = {
 
 # Database functions
 def get_database_connection():
-    """Get database connection - supports both SQLite and PostgreSQL"""
+    """Get database connection - PostgreSQL (Supabase) or SQLite fallback"""
     if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
         try:
             import psycopg2
             from urllib.parse import urlparse
+            
+            # Parse the database URL
             result = urlparse(DATABASE_URL)
-            return psycopg2.connect(
+            
+            # Connect to PostgreSQL with timeout and SSL
+            conn = psycopg2.connect(
                 database=result.path[1:],
                 user=result.username,
                 password=result.password,
                 host=result.hostname,
-                port=result.port
+                port=result.port,
+                connect_timeout=10,
+                sslmode='require'  # Supabase requires SSL
             )
-        except (ImportError, Exception) as e:
-            print(f"PostgreSQL connection failed: {e}, falling back to SQLite")
+            return conn
+        except ImportError:
+            print("⚠️ psycopg2 not installed, falling back to SQLite")
+            return sqlite3.connect("mushroom_app.db")
+        except Exception as e:
+            print(f"⚠️ PostgreSQL connection failed: {e}")
+            print("⚠️ Falling back to SQLite")
             return sqlite3.connect("mushroom_app.db")
     else:
         db_path = DATABASE_URL.replace("sqlite:///./", "").replace("sqlite:///", "")
         return sqlite3.connect(db_path)
 
 def init_database():
-    """Initialize database tables"""
+    """Initialize database tables - PostgreSQL or SQLite"""
     conn = get_database_connection()
     cursor = conn.cursor()
     
+    # Detect if we're using PostgreSQL or SQLite
+    is_postgres = DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
+    
     try:
-        # Try PostgreSQL first if URL suggests it
-        if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        if is_postgres:
+            print("🔧 Initializing PostgreSQL (Supabase) database...")
+            
+            # Create users table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -103,6 +119,7 @@ def init_database():
                 )
             ''')
             
+            # Create journal entries table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     id SERIAL PRIMARY KEY,
@@ -120,6 +137,7 @@ def init_database():
                 )
             ''')
             
+            # Create forum posts table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS forum_posts (
                     id SERIAL PRIMARY KEY,
@@ -143,8 +161,12 @@ def init_database():
                 ON CONFLICT (username) DO NOTHING
             ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
             
+            print("✅ Database initialized successfully (PostgreSQL/Supabase)")
+            
         else:
-            # SQLite fallback
+            print("🔧 Initializing SQLite database...")
+            
+            # Create users table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +182,7 @@ def init_database():
                 )
             ''')
             
+            # Create journal entries table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +201,7 @@ def init_database():
                 )
             ''')
             
+            # Create forum posts table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS forum_posts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,65 +223,14 @@ def init_database():
                 INSERT OR IGNORE INTO users (username, email, password_hash, full_name, role)
                 VALUES (?, ?, ?, ?, ?)
             ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
+            
+            print("✅ Database initialized successfully (SQLite)")
         
         conn.commit()
-        print("✅ Database initialized successfully")
         
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
-        # Try SQLite as last resort
-        if "postgresql" in str(e).lower():
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    full_name TEXT,
-                    bio TEXT,
-                    location TEXT,
-                    role TEXT DEFAULT 'user',
-                    is_active INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS journal_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    date TEXT NOT NULL,
-                    location TEXT NOT NULL,
-                    temperature REAL,
-                    humidity REAL,
-                    rainfall REAL,
-                    wind_speed REAL,
-                    species_found TEXT,
-                    entry_text TEXT NOT NULL,
-                    images TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS forum_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    category TEXT DEFAULT 'general',
-                    author TEXT NOT NULL,
-                    source_url TEXT,
-                    auto_generated INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    replies_count INTEGER DEFAULT 0,
-                    post_type TEXT DEFAULT 'user'
-                )
-            ''')
-            password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT OR IGNORE INTO users (username, email, password_hash, full_name, role)
-                VALUES (?, ?, ?, ?, ?)
-            ''', ("admin", "admin@mushroomapp.com", password_hash, "Administrator", "admin"))
-            conn.commit()
+        conn.rollback()
     finally:
         conn.close()
 
@@ -617,12 +590,8 @@ async def signup(user: UserCreate):
     cursor = conn.cursor()
     
     # Check if user exists
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT username FROM users WHERE username = %s OR email = %s", 
-                      (user.username, user.email))
-    else:
-        cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
-                      (user.username, user.email))
+    cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
+                  (user.username, user.email))
     
     if cursor.fetchone():
         conn.close()
@@ -631,16 +600,10 @@ async def signup(user: UserCreate):
     # Hash password and create user
     password_hash = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute('''
-            INSERT INTO users (username, email, password_hash, full_name)
-            VALUES (%s, %s, %s, %s)
-        ''', (user.username, user.email, password_hash, user.full_name))
-    else:
-        cursor.execute('''
-            INSERT INTO users (username, email, password_hash, full_name)
-            VALUES (?, ?, ?, ?)
-        ''', (user.username, user.email, password_hash, user.full_name))
+    cursor.execute('''
+        INSERT INTO users (username, email, password_hash, full_name)
+        VALUES (?, ?, ?, ?)
+    ''', (user.username, user.email, password_hash, user.full_name))
     
     conn.commit()
     conn.close()
@@ -661,12 +624,8 @@ async def login(login_data: LoginRequest):
     conn = get_database_connection()
     cursor = conn.cursor()
     
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        cursor.execute("SELECT username, password_hash FROM users WHERE username = %s", 
-                      (login_data.username,))
-    else:
-        cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
-                      (login_data.username,))
+    cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
+                  (login_data.username,))
     
     user = cursor.fetchone()
     conn.close()
