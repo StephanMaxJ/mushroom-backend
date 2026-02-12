@@ -69,25 +69,16 @@ MUSHROOM_PROFILES = {
 
 # Database functions
 def get_database_connection():
-    """Get database connection - supports both SQLite and PostgreSQL"""
     if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
         try:
+            # Supabase fix: ensure the prefix is postgresql://
+            url = DATABASE_URL.replace("postgres://", "postgresql://")
             import psycopg2
-            from urllib.parse import urlparse
-            result = urlparse(DATABASE_URL)
-            return psycopg2.connect(
-                database=result.path[1:],
-                user=result.username,
-                password=result.password,
-                host=result.hostname,
-                port=result.port
-            )
+            return psycopg2.connect(url) # Simpler way to connect using the full URL
         except (ImportError, Exception) as e:
-            print(f"PostgreSQL connection failed: {e}, falling back to SQLite")
+            print(f"PostgreSQL connection failed: {e}")
             return sqlite3.connect("mushroom_app.db")
-    else:
-        db_path = DATABASE_URL.replace("sqlite:///", "")
-        return sqlite3.connect(db_path)
+
 
 def init_database():
     """Initialize database tables"""
