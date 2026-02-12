@@ -26,17 +26,24 @@ app = FastAPI(
 )
 
 # CORS Configuration
-if ENVIRONMENT == "production":
-    allowed_origins = [
-        FRONTEND_URL,
-        "https://www.foragersfriend.info", 
-        "https://foragersfriend.info",      
-        "https://*.onrender.com",
-        "https://*.netlify.app",
-        "https://*.vercel.app"
-    ]
-else:
-    allowed_origins = ["*"]
+# CORS Configuration (FIXED)
+
+origins = [
+    "https://www.foragersfriend.info",
+    "https://foragersfriend.info",
+    "https://mushroom-backend-frwl.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 app.add_middleware(
     CORSMiddleware,
