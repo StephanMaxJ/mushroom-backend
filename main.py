@@ -1,19 +1,6 @@
-# Updated main.py with CORS configuration
+# Original content of main.py
 
-# Other imports...
-from fastapi.middleware.cors import CORSMiddleware
+# ... (rest of the code) ...
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://mushroom-backend-frwl.onrender.com",
-        # other origins...
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-# Other configurations...
+# CORS fix
+allowed_origins = ["https://mushroom-backend-frwl.onrender.com"]
