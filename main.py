@@ -306,10 +306,9 @@ class JournalEntry(BaseModel):
     entry_text: str
     images: Optional[List[dict]] = None
 
-class ForumPost(BaseModel):
-    title: str
-    content: str
-    category: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 # Authentication functions
 def create_access_token(data: dict):
@@ -612,21 +611,22 @@ async def signup(user: UserCreate):
     }
 
 @app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(login_data: LoginRequest):
+    """Login endpoint that accepts JSON"""
     conn = get_database_connection()
     cursor = conn.cursor()
     
     if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
         cursor.execute("SELECT username, password_hash FROM users WHERE username = %s", 
-                      (form_data.username,))
+                      (login_data.username,))
     else:
         cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
-                      (form_data.username,))
+                      (login_data.username,))
     
     user = cursor.fetchone()
     conn.close()
     
-    if not user or not bcrypt.checkpw(form_data.password.encode('utf-8'), user[1].encode('utf-8')):
+    if not user or not bcrypt.checkpw(login_data.password.encode('utf-8'), user[1].encode('utf-8')):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
@@ -638,6 +638,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         "access_token": access_token,
         "token_type": "bearer",
         "username": user[0]
+    
     }
 
 # User profile routes
