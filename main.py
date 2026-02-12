@@ -26,23 +26,24 @@ app = FastAPI(
 )
 
 # CORS Configuration
-# CORS Configuration (FIXED)
+from fastapi.middleware.cors import CORSMiddleware
 
-origins = [
+# ✅ CORS (fixed + beginner-safe)
+allowed_origins = [
     "https://www.foragersfriend.info",
     "https://foragersfriend.info",
-    "https://mushroom-backend-frwl.onrender.com",
     "http://localhost:3000",
-    "http://127.0.0.1:5500"
+    "http://127.0.0.1:5500",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 app.add_middleware(
