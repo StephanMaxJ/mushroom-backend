@@ -26,20 +26,14 @@ app = FastAPI(
 )
 
 # CORS Configuration
-# CORS Configuration (FIXED)
+# TEMPORARILY ALLOWING ALL ORIGINS FOR DEBUGGING
 
-origins = [
-    "https://www.foragersfriend.info",
-    "https://foragersfriend.info",
-    "https://mushroom-backend-frwl.onrender.com",
-    "http://localhost:3000",
-    "http://127.0.0.1:5500"
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False when allow_origins is ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
