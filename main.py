@@ -25,15 +25,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS Configuration - Allow all origins for debugging
-origins = ["*"]
+# CORS Configuration - Production
+origins = [
+    "https://www.foragersfriend.info",
+    "https://foragersfriend.info",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5500"
+]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=False,  # Must be False when allow_origins is ["*"]
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Security
@@ -589,9 +596,13 @@ async def signup(user: UserCreate):
     conn = get_database_connection()
     cursor = conn.cursor()
     
-    # Check if user exists
-    cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
-                  (user.username, user.email))
+    # Check if user exists - use correct syntax
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT username FROM users WHERE username = %s OR email = %s", 
+                      (user.username, user.email))
+    else:
+        cursor.execute("SELECT username FROM users WHERE username = ? OR email = ?", 
+                      (user.username, user.email))
     
     if cursor.fetchone():
         conn.close()
@@ -600,10 +611,16 @@ async def signup(user: UserCreate):
     # Hash password and create user
     password_hash = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     
-    cursor.execute('''
-        INSERT INTO users (username, email, password_hash, full_name)
-        VALUES (?, ?, ?, ?)
-    ''', (user.username, user.email, password_hash, user.full_name))
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute('''
+            INSERT INTO users (username, email, password_hash, full_name)
+            VALUES (%s, %s, %s, %s)
+        ''', (user.username, user.email, password_hash, user.full_name))
+    else:
+        cursor.execute('''
+            INSERT INTO users (username, email, password_hash, full_name)
+            VALUES (?, ?, ?, ?)
+        ''', (user.username, user.email, password_hash, user.full_name))
     
     conn.commit()
     conn.close()
@@ -624,8 +641,13 @@ async def login(login_data: LoginRequest):
     conn = get_database_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
-                  (login_data.username,))
+    # Use correct SQL syntax based on database type
+    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+        cursor.execute("SELECT username, password_hash FROM users WHERE username = %s", 
+                      (login_data.username,))
+    else:
+        cursor.execute("SELECT username, password_hash FROM users WHERE username = ?", 
+                      (login_data.username,))
     
     user = cursor.fetchone()
     conn.close()
