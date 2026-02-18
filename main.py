@@ -61,7 +61,7 @@ MUSHROOM_PROFILES = {
     "slippery_jills": {"temp_range": (9, 24), "humidity_min": 65, "rain_min": 0.5, "rain_max": 30, "wind_max": 15},
     "weeping_bolete": {"temp_range": (9, 23), "humidity_min": 60, "rain_min": 0.5, "rain_max": 25, "wind_max": 15},
     "bovine_bolete": {"temp_range": (9, 22), "humidity_min": 60, "rain_min": 0.5, "rain_max": 28, "wind_max": 15},
-    "chicken_of_the_woods": {"temp_range": (18, 30), "humidity_min": 45, "rain_min": 2, "rain_max": 15, "wind_max": 20},
+    "chicken_of_the_woods": {"temp_range": (18, 30), "humidity_min": 60, "rain_min": 3, "rain_max": 50, "wind_max": 20},
     "termitomyces": {"temp_range": (20, 32), "humidity_min": 80, "rain_min": 15, "rain_max": 50, "wind_max": 4}
 }
 
@@ -348,23 +348,23 @@ def get_season(latitude=None):
     
     if is_northern:
         # Northern Hemisphere seasons
-        if 12 <= month <= 2:
+        if month in [12, 1, 2]:
             return "Winter ❄️"
-        elif 3 <= month <= 5:
+        elif month in [3, 4, 5]:
             return "Spring 🌸"
-        elif 6 <= month <= 8:
+        elif month in [6, 7, 8]:
             return "Summer 🌞"
-        else:  # 9-11
+        else:  # [9, 10, 11]
             return "Autumn 🍂"
     else:
         # Southern Hemisphere seasons (default)
-        if 12 <= month <= 2:
+        if month in [12, 1, 2]:
             return "Summer 🌞"
-        elif 3 <= month <= 5:
+        elif month in [3, 4, 5]:
             return "Autumn 🍂"
-        elif 6 <= month <= 8:
+        elif month in [6, 7, 8]:
             return "Winter 🌧️"
-        else:  # 9-11
+        else:  # [9, 10, 11]
             return "Spring 🌸"
 
 def average(values):
