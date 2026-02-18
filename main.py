@@ -334,16 +334,38 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # Utility functions
-def get_season():
+def get_season(latitude=None):
+    """
+    Get current season based on hemisphere
+    latitude > 0 = Northern Hemisphere
+    latitude < 0 = Southern Hemisphere
+    latitude = None = Auto-detect based on UTC (Southern Hemisphere default)
+    """
     month = datetime.utcnow().month
-    if 12 <= month <= 2:
-        return "Summer 🌞"
-    elif 3 <= month <= 5:
-        return "Autumn 🍂"
-    elif 6 <= month <= 8:
-        return "Winter 🌧️"
+    
+    # Determine hemisphere
+    is_northern = latitude is not None and latitude > 0
+    
+    if is_northern:
+        # Northern Hemisphere seasons
+        if 12 <= month <= 2:
+            return "Winter ❄️"
+        elif 3 <= month <= 5:
+            return "Spring 🌸"
+        elif 6 <= month <= 8:
+            return "Summer 🌞"
+        else:  # 9-11
+            return "Autumn 🍂"
     else:
-        return "Spring 🌸"
+        # Southern Hemisphere seasons (default)
+        if 12 <= month <= 2:
+            return "Summer 🌞"
+        elif 3 <= month <= 5:
+            return "Autumn 🍂"
+        elif 6 <= month <= 8:
+            return "Winter 🌧️"
+        else:  # 9-11
+            return "Spring 🌸"
 
 def average(values):
     clean = [v for v in values if v is not None]
@@ -575,7 +597,7 @@ def check_conditions(lat: float = Query(...), lon: float = Query(...), current_u
 
     return {
         "location": {"lat": lat, "lon": lon},
-        "season": get_season(),
+        "season": get_season(lat),  # Pass latitude to detect hemisphere
         "foraging_quality": quality,
         "avg_temperature": round(avg_temp, 1),
         "avg_precipitation": round(avg_rain, 1),
